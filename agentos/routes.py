@@ -1,10 +1,12 @@
 """Aegra 自定义 HTTP 路由。
 
 - ``/files/{aid}/{tid}/{rel}``:回传线程持久文件(``share_file`` 下载链接指向这里)。
-- ``/deepagent/{aid}/...``:管理该 assistant 的 ``.deepagent/<aid>/`` 资产(skills、.mcp.json)——
-  列目录 / 读 / 新建 / 改内容 / 移动改名 / 删除,均限定在该 assistant 目录内。
+- ``/assistants/{aid}/files`` · ``.../files/{rel}`` · ``/assistants/{aid}/move``:管理该
+  assistant 的 ``.deepagent/<aid>/`` 资产(skills、.mcp.json)——列目录 / 读 / 新建 /
+  改内容 / 移动改名 / 删除,均限定在该 assistant 目录内。
 
-路由前缀刻意避开 ``/assistants``,以免与 Aegra 自带的 Agent Protocol 接口冲突。
+资产端点挂在 ``/assistants/{aid}/`` 下、共用 ``Assistants`` 分组:子路径 files/move 与
+Aegra 自带的 assistant 子资源(latest/versions/schemas/graph/subgraphs)不重名,故互不干扰。
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def _fail(exc: Exception) -> HTTPException:
     raise exc
 
 
-@app.get("/deepagent/{assistant_id}/files", tags=["Assistant assets"])
+@app.get("/assistants/{assistant_id}/files", tags=["Assistants"])
 def list_assets(assistant_id: str, path: str = "") -> list[assets.Entry]:
     try:
         return assets.ls(_dir(assistant_id), path)
@@ -81,7 +83,7 @@ def list_assets(assistant_id: str, path: str = "") -> list[assets.Entry]:
         raise _fail(exc) from exc
 
 
-@app.get("/deepagent/{assistant_id}/files/{rel:path}", tags=["Assistant assets"])
+@app.get("/assistants/{assistant_id}/files/{rel:path}", tags=["Assistants"])
 def read_asset(assistant_id: str, rel: str) -> dict[str, str]:
     try:
         content = assets.read(_dir(assistant_id), rel)
@@ -90,7 +92,7 @@ def read_asset(assistant_id: str, rel: str) -> dict[str, str]:
     return {"path": rel, "content": content}
 
 
-@app.post("/deepagent/{assistant_id}/files", status_code=201, tags=["Assistant assets"])
+@app.post("/assistants/{assistant_id}/files", status_code=201, tags=["Assistants"])
 def create_asset(assistant_id: str, body: CreateBody) -> dict[str, str]:
     try:
         created = assets.create(_dir(assistant_id), body.path, body.content)
@@ -99,7 +101,7 @@ def create_asset(assistant_id: str, body: CreateBody) -> dict[str, str]:
     return {"created": created}
 
 
-@app.put("/deepagent/{assistant_id}/files/{rel:path}", tags=["Assistant assets"])
+@app.put("/assistants/{assistant_id}/files/{rel:path}", tags=["Assistants"])
 def write_asset(assistant_id: str, rel: str, body: WriteBody) -> dict[str, str]:
     try:
         saved = assets.write(_dir(assistant_id), rel, body.content)
@@ -108,7 +110,7 @@ def write_asset(assistant_id: str, rel: str, body: WriteBody) -> dict[str, str]:
     return {"saved": saved}
 
 
-@app.post("/deepagent/{assistant_id}/move", tags=["Assistant assets"])
+@app.post("/assistants/{assistant_id}/move", tags=["Assistants"])
 def move_asset(assistant_id: str, body: MoveBody) -> dict[str, str]:
     try:
         dest = assets.move(_dir(assistant_id), body.src, body.dest)
@@ -117,7 +119,7 @@ def move_asset(assistant_id: str, body: MoveBody) -> dict[str, str]:
     return {"moved": dest, "from": body.src}
 
 
-@app.delete("/deepagent/{assistant_id}/files/{rel:path}", tags=["Assistant assets"])
+@app.delete("/assistants/{assistant_id}/files/{rel:path}", tags=["Assistants"])
 def delete_asset(assistant_id: str, rel: str) -> dict[str, str]:
     try:
         removed = assets.delete(_dir(assistant_id), rel)

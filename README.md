@@ -148,7 +148,7 @@ openagentos/
 │   ├── builder.py          # 组装：model + tools + subagents → create_deep_agent
 │   ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
 │   ├── assets.py           # .deepagent/<aid>/ 资产文件的增删改移（限定目录内）
-│   └── routes.py           # Aegra 自定义 HTTP：线程文件下载 + .deepagent 资产管理
+│   └── routes.py           # Aegra 自定义 HTTP：线程文件下载 + /assistants/{aid} 资产管理
 └── scripts/
     └── smoke_test.py       # 用 LangGraph SDK 流式跑一轮
 ```
