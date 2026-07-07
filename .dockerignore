@@ -23,8 +23,6 @@ __pycache__/
 docker-compose*.yml
 Dockerfile
 .dockerignore
-deploy.sh
-deploy.ps1
 sandbox.toml
 
 # 运行时数据（共享磁盘 / 产物；绝不进镜像）
