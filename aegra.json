@@ -1,6 +1,6 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "agentos": "./agentos/graph.py:graph"
+    "agentos": "./agentos/graph.py:make_graph"
   }
 }

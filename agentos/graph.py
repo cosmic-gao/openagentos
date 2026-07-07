@@ -1,51 +1,33 @@
-"""Graph entrypoint — registered in aegra.json as `agentos`.
+"""aegra.json 入口：make_graph(config) 按 assistant 构图（Aegra 每请求以该助手 config 调用）。
 
-DeepAgents builds the agent; Aegra hosts it and injects PostgreSQL persistence
-(the checkpointer) and the store at runtime. We therefore deliberately do NOT
-pass a checkpointer/store here — Aegra owns durability.
+按助手装配 model（config.json）、skills（/assistant/skills）、MCP tools（.mcp.json）、backend。
+持久化由 Aegra 运行时注入（不传 checkpointer/store）。
 """
 
 from __future__ import annotations
 
 from deepagents import create_deep_agent
 
+from agentos import workspace
 from agentos.backends import build_backend
-from agentos.model import get_model
+from agentos.mcp_tools import load_mcp_tools
+from agentos.model import model_from_config
 from agentos.prompts import SYSTEM_PROMPT
+from agentos.runtime import assistant_id_from_config
 from agentos.subagents import build_subagents
 from agentos.tools import default_tools
 
 
-def build_graph():
-    """Construct the compiled DeepAgents graph that Aegra serves."""
-    # backend：每线程临时沙箱（execute + 草稿）+ /assistant/ 每助手磁盘目录。
+async def make_graph(config: dict):
+    assistant_id = assistant_id_from_config(config)
+    workspace.ensure_assistant(assistant_id)
+    model = model_from_config(workspace.load_config(assistant_id))
+    tools = default_tools() + await load_mcp_tools(assistant_id)
     return create_deep_agent(
-        model=get_model(),
-        tools=default_tools(),
+        model=model,
+        tools=tools,
         system_prompt=SYSTEM_PROMPT,
-        subagents=build_subagents(),
-        backend=build_backend(),
+        subagents=build_subagents(model),
+        backend=build_backend(assistant_id),
+        skills=["/assistant/skills"],
     )
-
-
-# Aegra loads this module-level compiled graph at startup.
-graph = build_graph()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Enabling MCP tools (QuickBooks / ClickUp / your own servers)
-# ─────────────────────────────────────────────────────────────────────────────
-# MCP tools load asynchronously, so expose an async factory and point aegra.json
-# at it instead of the `graph` above:
-#
-#     "graphs": { "agentos": "./agentos/graph.py:make_graph" }
-#
-# async def make_graph():
-#     from agentos.mcp_tools import load_mcp_tools
-#     tools = default_tools() + await load_mcp_tools()
-#     return create_deep_agent(
-#         model=get_model(),
-#         tools=tools,
-#         system_prompt=SYSTEM_PROMPT,
-#         subagents=build_subagents(),
-#     )

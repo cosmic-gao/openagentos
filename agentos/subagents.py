@@ -1,21 +1,15 @@
-"""OpenAgentOS 的子代理定义。
-
-子代理在隔离上下文中运行，主 agent 通过内置 `task` 工具调用。每个子代理是一个
-deepagents 的 `SubAgent` TypedDict：name / description / system_prompt（必填），外加
-可选的 tools / model / middleware / skills 等。
-"""
+"""子代理定义（主 agent 通过内置 task 工具委派，沿用该助手模型）。"""
 
 from __future__ import annotations
 
 from deepagents import SubAgent
+from langchain_core.language_models import BaseChatModel
 
-from agentos.model import get_subagent_model
 from agentos.prompts import RESEARCH_PROMPT
 from agentos.tools import internet_search
 
 
-def build_subagents() -> list[SubAgent]:
-    """返回主 agent 可通过 `task` 委派的子代理列表。"""
+def build_subagents(model: BaseChatModel) -> list[SubAgent]:
     research_agent: SubAgent = {
         "name": "research-agent",
         "description": (
@@ -25,6 +19,6 @@ def build_subagents() -> list[SubAgent]:
         ),
         "system_prompt": RESEARCH_PROMPT,
         "tools": [internet_search],
-        "model": get_subagent_model(),
+        "model": model,
     }
     return [research_agent]

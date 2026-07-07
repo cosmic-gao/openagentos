@@ -1,4 +1,4 @@
-"""System prompts for OpenAgentOS agents."""
+"""主 agent 与 research 子代理的系统提示。"""
 
 from __future__ import annotations
 

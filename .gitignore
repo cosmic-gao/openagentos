@@ -19,8 +19,8 @@ __pycache__/
 .langgraph_api/
 .langgraph/
 
-# OpenAgentOS 运行时数据（每助手目录、沙箱产物）
-/data/
+# OpenAgentOS 每助手目录（skill/、.mcp.json、config.json — 含密钥，勿提交）
+/.deepagent/
 
 # Build
 dist/

@@ -1,16 +1,4 @@
-"""Chat model factory.
-
-OpenAgentOS talks to an OpenAI-compatible gateway (the MSPbots gateway, Azure
-OpenAI, LiteLLM, vLLM, Ollama, ...). The endpoint, key and model are all driven
-by environment variables, so the same code runs against any backend with no edits.
-
-Environment variables (aliases in parentheses):
-    OPENAI_BASE_URL  (AGENTOS_BASE_URL)   Base URL of the OpenAI-compatible gateway.
-    OPENAI_API_KEY   (AGENTOS_API_KEY)    API key for the gateway.
-    AGENTOS_MODEL                         Default model name (default: "gpt-4o").
-    AGENTOS_SUBAGENT_MODEL                Model for subagents (default: AGENTOS_MODEL).
-    AGENTOS_TEMPERATURE                   Optional sampling temperature (float).
-"""
+"""Chat model 工厂：OpenAI 兼容网关。每助手 config.json 覆盖，缺项回退全局 env。"""
 
 from __future__ import annotations
 
@@ -23,42 +11,33 @@ DEFAULT_MODEL = "gpt-4o"
 
 
 def _first_env(*names: str) -> str | None:
-    """Return the first non-empty value among the given environment variables."""
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return None
+    return next((v for name in names if (v := os.environ.get(name))), None)
 
 
-def get_model(model: str | None = None, *, temperature: float | None = None) -> BaseChatModel:
-    """Build a chat model pointed at the configured OpenAI-compatible gateway."""
+def get_model(
+    model: str | None = None,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    temperature: float | None = None,
+) -> BaseChatModel:
     model = model or os.environ.get("AGENTOS_MODEL", DEFAULT_MODEL)
-    base_url = _first_env("OPENAI_BASE_URL", "AGENTOS_BASE_URL")
-    api_key = _first_env("OPENAI_API_KEY", "AGENTOS_API_KEY")
-
+    base_url = base_url or _first_env("OPENAI_BASE_URL", "AGENTOS_BASE_URL")
+    api_key = api_key or _first_env("OPENAI_API_KEY", "AGENTOS_API_KEY")
     if temperature is None:
         raw = os.environ.get("AGENTOS_TEMPERATURE")
         temperature = float(raw) if raw else None
 
     if not base_url:
-        raise RuntimeError(
-            "OPENAI_BASE_URL (or AGENTOS_BASE_URL) is not set. Copy .env.example "
-            "to .env and point it at your OpenAI-compatible gateway."
-        )
+        raise RuntimeError("OPENAI_BASE_URL 未配置（全局 .env 或 .deepagent/<id>/config.json）。")
 
-    kwargs: dict = {
-        "model": model,
-        "base_url": base_url,
-        # Many gateways require a key; keyless local gateways (vLLM/Ollama) accept any.
-        "api_key": api_key or "EMPTY",
-    }
+    kwargs: dict = {"model": model, "base_url": base_url, "api_key": api_key or "EMPTY"}
     if temperature is not None:
         kwargs["temperature"] = temperature
-
     return ChatOpenAI(**kwargs)
 
 
-def get_subagent_model() -> BaseChatModel:
-    """Model used by subagents; falls back to the main model when unset."""
-    return get_model(os.environ.get("AGENTOS_SUBAGENT_MODEL"))
+def model_from_config(cfg: dict | None) -> BaseChatModel:
+    """按助手 config.json（OPENAI_MODEL/BASE_URL/API_KEY）覆盖构造模型。"""
+    cfg = cfg or {}
+    return get_model(cfg.get("OPENAI_MODEL"), base_url=cfg.get("OPENAI_BASE_URL"), api_key=cfg.get("OPENAI_API_KEY"))
