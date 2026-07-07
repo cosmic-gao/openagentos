@@ -12,11 +12,13 @@ type = "docker"
 execd_image = "opensandbox/execd:v1.0.19"
 
 [docker]
-# 沙箱容器加入 compose 网络（<部署目录名>_default，即 openagentos_default），
-# server/app 按容器 IP 直连沙箱，不经宿主端口转发。
+# 沙箱加入 compose 网络（openagentos_default），与 app/server 同网。
 network_mode = "openagentos_default"
-# Docker Desktop 下 host.docker.internal 即可；Linux 若被防火墙挡，deploy 脚本可注入宿主真实 IP。
+# client 连沙箱的地址；配合 opensandbox-server 的 host-gateway，Linux 与 Docker Desktop 通用（防火墙拦则改宿主 IP）。
 host_ip = "host.docker.internal"
+# 每沙箱 publish 2~3 个宿主端口；避开 Windows 保留端口段（默认 40000-60000 会撞），Linux 亦空闲。
+port_range_min = 40000
+port_range_max = 47000
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true
 pids_limit = 4096
