@@ -26,6 +26,11 @@ pids_limit = 4096
 [ingress]
 mode = "direct"
 
+# 按访问续期：沙箱在窗口内被访问就保活，空闲超过 AGENTOS_SANDBOX_TTL 才销毁；min_interval 为续期冷却。
+[renew_intent]
+enabled = true
+min_interval_seconds = 60
+
 [store]
 type = "sqlite"
 path = "/root/.opensandbox/opensandbox.db"
