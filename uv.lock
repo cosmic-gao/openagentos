@@ -450,8 +450,8 @@ wheels = [
 
 [[package]]
 name = "deepagents-opensandbox"
-version = "0.1.0"
-source = { git = "https://github.com/cosmic-gao/opensandbox.git?branch=main#fb9e5b0fe3f7bf49679bc5f104a81f5f3e0b204b" }
+version = "0.2.0"
+source = { git = "https://github.com/cosmic-gao/opensandbox.git?branch=main#40680836c07b700f9d3154bf9517780fe8dfd1e5" }
 dependencies = [
     { name = "deepagents" },
     { name = "opensandbox" },
