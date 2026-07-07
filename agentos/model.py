@@ -1,43 +1,34 @@
-"""Chat model 工厂：OpenAI 兼容网关。每助手 config.json 覆盖，缺项回退全局 env。"""
+"""Chat model 工厂：OpenAI 兼容网关（MSPbots / Azure / LiteLLM / vLLM / Ollama）。"""
 
 from __future__ import annotations
 
-import os
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
-DEFAULT_MODEL = "gpt-4o"
-
-
-def _first_env(*names: str) -> str | None:
-    return next((v for name in names if (v := os.environ.get(name))), None)
+from agentos.config import DEFAULT_MODEL
 
 
-def get_model(
-    model: str | None = None,
+def build(
     *,
-    base_url: str | None = None,
-    api_key: str | None = None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
     temperature: float | None = None,
+    model_params: dict[str, Any] | None = None,
 ) -> BaseChatModel:
-    model = model or os.environ.get("AGENTOS_MODEL", DEFAULT_MODEL)
-    base_url = base_url or _first_env("OPENAI_BASE_URL", "AGENTOS_BASE_URL")
-    api_key = api_key or _first_env("OPENAI_API_KEY", "AGENTOS_API_KEY")
-    if temperature is None:
-        raw = os.environ.get("AGENTOS_TEMPERATURE")
-        temperature = float(raw) if raw else None
-
     if not base_url:
-        raise RuntimeError("OPENAI_BASE_URL 未配置（全局 .env 或 .deepagent/<id>/config.json）。")
-
-    kwargs: dict = {"model": model, "base_url": base_url, "api_key": api_key or "EMPTY"}
+        raise RuntimeError("OPENAI_BASE_URL 未配置（全局 .env 或 assistant config.configurable）。")
+    kwargs: dict[str, Any] = {
+        "model": model or DEFAULT_MODEL,
+        "base_url": base_url,
+        # 无鉴权本地网关（vLLM/Ollama）可用任意 key
+        "api_key": SecretStr(api_key or "EMPTY"),
+    }
     if temperature is not None:
         kwargs["temperature"] = temperature
+    if model_params:
+        kwargs.update(model_params)
     return ChatOpenAI(**kwargs)
-
-
-def model_from_config(cfg: dict | None) -> BaseChatModel:
-    """按助手 config.json（OPENAI_MODEL/BASE_URL/API_KEY）覆盖构造模型。"""
-    cfg = cfg or {}
-    return get_model(cfg.get("OPENAI_MODEL"), base_url=cfg.get("OPENAI_BASE_URL"), api_key=cfg.get("OPENAI_API_KEY"))

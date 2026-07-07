@@ -23,7 +23,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 
-from agentos.runtime import current_thread_id
+from agentos.config import current_thread_id
 
 logger = logging.getLogger(__name__)
 

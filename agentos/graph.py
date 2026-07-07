@@ -1,33 +1,32 @@
-"""aegra.json 入口：make_graph(config) 按 assistant 构图（Aegra 每请求以该助手 config 调用）。
+"""aegra.json 入口：make_graph(config) 按 assistant 构图。
 
-按助手装配 model（config.json）、skills（/assistant/skills）、MCP tools（.mcp.json）、backend。
-持久化由 Aegra 运行时注入（不传 checkpointer/store）。
+配置全部来自 Aegra assistant 的 config 字段（config.configurable）：model/base_url/api_key/
+prompt/mcpServers/skills（缺项回退全局 env）。每线程沙箱（含 execute）与 export_artifact
+工具共用同一实例。持久化由 Aegra 运行时注入（不传 checkpointer/store）。
 """
 
 from __future__ import annotations
 
-from deepagents import create_deep_agent
-
-from agentos import workspace
-from agentos.backends import build_backend
-from agentos.mcp_tools import load_mcp_tools
-from agentos.model import model_from_config
-from agentos.prompts import SYSTEM_PROMPT
-from agentos.runtime import assistant_id_from_config
-from agentos.subagents import build_subagents
-from agentos.tools import default_tools
+from agentos import builder, mcp
+from agentos import config as cfg
+from agentos import sandbox as sbx
+from agentos import tools as tls
 
 
 async def make_graph(config: dict):
-    assistant_id = assistant_id_from_config(config)
-    workspace.ensure_assistant(assistant_id)
-    model = model_from_config(workspace.load_config(assistant_id))
-    tools = default_tools() + await load_mcp_tools(assistant_id)
-    return create_deep_agent(
-        model=model,
-        tools=tools,
-        system_prompt=SYSTEM_PROMPT,
-        subagents=build_subagents(model),
-        backend=build_backend(assistant_id),
-        skills=["/assistant/skills"],
+    resolved = cfg.resolve(cfg.AgentConfig.parse(cfg.configurable(config)), cfg.get_settings())
+
+    # 每线程沙箱（禁用时 None）；与 export_artifact 共用同一实例，确保命中同一线程容器。
+    box = sbx.build_sandbox()
+    agent_tools = tls.default_tools()
+    if box is not None:
+        agent_tools.append(tls.build_export_artifact(box))
+    agent_tools += await mcp.tools(resolved.mcp_servers)
+
+    backend, skill_sources = builder.build_backend(resolved.skills, default=box)
+    return builder.build(
+        resolved=resolved,
+        backend=backend,
+        tools=agent_tools,
+        skill_sources=skill_sources,
     )
