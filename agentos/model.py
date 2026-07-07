@@ -13,4 +13,5 @@ def build(*, model: str | None, base_url: str | None, api_key: str | None) -> Ba
         raise ValueError(
             f"missing {' + '.join(missing)}: set assistant config.configurable or OPENAI_* env"
         )
+    assert model is not None and base_url is not None  # 上面已校验非空,收窄类型给 ChatOpenAI
     return ChatOpenAI(model=model, base_url=base_url, api_key=SecretStr(api_key or "EMPTY"))
