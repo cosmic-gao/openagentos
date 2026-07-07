@@ -1,219 +1,179 @@
-"""每线程 OpenSandbox：按 Aegra thread 复用沙箱，空闲到期由 reaper 销毁。
+"""每线程临时沙箱:metadata 发现 + connect/resume/create,服务端 TTL 到期自动销毁。
 
-SessionSandbox 传给 create_deep_agent(backend=...)，每次操作按 thread_id 委派到该线程的
-AsyncOpenSandboxBackend；SandboxManager 负责创建、复用、空闲回收。沙箱运行时由开源包
-deepagents-opensandbox + OpenSandbox 服务提供（不自研）。
+生命周期归 OpenSandbox 服务端(创建时带 ``timeout``),进程内只缓存句柄——app 重启
+或沙箱到期后,下一次操作按 metadata 重新发现或重建,同一 subPath 重挂共享磁盘,
+线程文件无损。持久化在卷上,沙箱本身可弃。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import time
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
-    execute_accepts_timeout,
+    ReadResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
+from deepagents_opensandbox import AsyncOpenSandboxBackend
 
-from agentos.config import current_thread_id
+from agentos import workspace
+from agentos.config import Settings, current_thread_id, safe_segment
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-_SYNC_UNSUPPORTED = "SessionSandbox 仅支持异步执行（Aegra 使用 ainvoke）。"
+_ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
+
+_handles: dict[tuple[str, str], AsyncOpenSandboxBackend] = {}
+_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 
-def thread_key() -> str:
-    return current_thread_id()
+def _connection(settings: Settings) -> Any:
+    from opensandbox.config import ConnectionConfig
+
+    return ConnectionConfig(
+        domain=settings.opensandbox_domain,
+        api_key=settings.opensandbox_api_key,
+        protocol=settings.protocol,
+        use_server_proxy=settings.server_proxy,
+    )
 
 
-def _disabled(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"0", "false", "no", "off"}
+def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
+    from opensandbox.models.sandboxes import PVC, Host, Volume
 
-
-@dataclass
-class _Entry:
-    backend: BaseSandbox
-    stack: AsyncExitStack
-    last_used: float
-
-
-@dataclass
-class SandboxManager:
-    """按 key（thread_id）复用 OpenSandbox 沙箱，空闲到期销毁。"""
-
-    image: str = "python:3.11"
-    idle_ttl: float = 1800.0
-    sweep_interval: float = 60.0
-    command_timeout: int | None = None
-    sandbox_lifetime: int | None = None
-    create_kwargs: dict = field(default_factory=dict)
-
-    _entries: dict[str, _Entry] = field(default_factory=dict, init=False)
-    _pending: dict[str, asyncio.Future] = field(default_factory=dict, init=False)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
-    _reaper: asyncio.Task | None = field(default=None, init=False)
-
-    @classmethod
-    def from_env(cls) -> "SandboxManager":
-        def _int(name: str) -> int | None:
-            raw = os.environ.get(name)
-            return int(raw) if raw else None
-
-        return cls(
-            image=os.environ.get("AGENTOS_SANDBOX_IMAGE", "python:3.11"),
-            idle_ttl=float(os.environ.get("AGENTOS_SANDBOX_IDLE_TTL", "1800")),
-            sweep_interval=float(os.environ.get("AGENTOS_SANDBOX_SWEEP", "60")),
-            command_timeout=_int("AGENTOS_SANDBOX_TIMEOUT"),
-            sandbox_lifetime=_int("AGENTOS_SANDBOX_LIFETIME"),
+    if settings.workspace_claim:
+        return Volume(
+            name=name,
+            pvc=PVC(claim_name=settings.workspace_claim, create_if_not_exists=True),
+            mount_path=mount,
+            sub_path=sub,
         )
+    return Volume(
+        name=name,
+        host=Host(path=workspace.host_root(settings)),
+        mount_path=mount,
+        sub_path=sub,
+    )
 
-    async def acquire(self, key: str) -> BaseSandbox:
-        """取（或惰性新建）该 key 的沙箱并刷新空闲计时；同 key 并发只创建一次。"""
-        async with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None:
-                entry.last_used = time.monotonic()
-                return entry.backend
-            pending = self._pending.get(key)
-            creator = pending is None
-            if creator:
-                pending = asyncio.get_running_loop().create_future()
-                self._pending[key] = pending
 
-        if not creator:
-            return await pending
+def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
+    return [
+        _volume(settings, "workspace", workspace.WORKSPACE, f"{assistant_id}/{thread_id}"),
+        _volume(
+            settings,
+            "skills",
+            workspace.SKILLS,
+            f"{workspace.DEEPAGENT}/{assistant_id}/skills",
+        ),
+    ]
 
-        try:
-            entry = await self._create(key)
-        except Exception as exc:
-            async with self._lock:
-                self._pending.pop(key, None)
-            pending.set_exception(exc)
-            raise
-        async with self._lock:
-            self._entries[key] = entry
-            self._pending.pop(key, None)
-            self._ensure_reaper()
-        pending.set_result(entry.backend)
-        return entry.backend
 
-    async def evict(self, key: str) -> None:
-        async with self._lock:
-            entry = self._entries.pop(key, None)
-        if entry is not None:
-            await self._close(key, entry)
+async def _discover(settings: Settings, metadata: dict[str, str]) -> Any | None:
+    """按 metadata 找已有沙箱:RUNNING 连接,PAUSED 恢复,否则 None。"""
+    from opensandbox.manager import SandboxManager
+    from opensandbox.models.sandboxes import SandboxFilter, SandboxState
+    from opensandbox.sandbox import Sandbox
 
-    async def aclose(self) -> None:
-        async with self._lock:
-            entries = list(self._entries.items())
-            self._entries.clear()
-        for key, entry in entries:
-            await self._close(key, entry)
+    connection = _connection(settings)
+    async with await SandboxManager.create(connection_config=connection) as manager:
+        listing = await manager.list_sandbox_infos(
+            SandboxFilter(metadata=metadata, page_size=10)
+        )
+        for info in listing.sandbox_infos:
+            if info.status.state == SandboxState.PAUSED:
+                return await Sandbox.resume(sandbox_id=info.id, connection_config=connection)
+            if info.status.state == SandboxState.RUNNING:
+                return await Sandbox.connect(sandbox_id=info.id, connection_config=connection)
+    return None
 
-    async def _create(self, key: str) -> _Entry:
-        from deepagents_opensandbox import AsyncOpenSandboxBackend
 
-        create_kwargs = {"image": self.image, **self.create_kwargs}
-        if self.command_timeout is not None:
-            create_kwargs["default_timeout"] = self.command_timeout
-        # create() 的 timeout 是 timedelta（沙箱寿命，服务端兜底）；默认远大于 idle_ttl，让 reaper 作主控。
-        lifetime = self.sandbox_lifetime if self.sandbox_lifetime is not None else max(int(self.idle_ttl) * 4, 3600)
-        create_kwargs["timeout"] = timedelta(seconds=lifetime)
-        # AsyncExitStack 复刻文档用法 `async with await create() as backend`，统一由 aclose 关闭。
-        stack = AsyncExitStack()
-        backend = await stack.enter_async_context(await AsyncOpenSandboxBackend.create(**create_kwargs))
-        logger.info("opensandbox created (key=%s, image=%s)", key, self.image)
-        return _Entry(backend=backend, stack=stack, last_used=time.monotonic())
+async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
+    metadata = {"agentos.assistant": assistant_id, "agentos.thread": thread_id}
+    workspace.thread(settings, assistant_id, thread_id).mkdir(parents=True, exist_ok=True)
 
-    def _ensure_reaper(self) -> None:
-        if self._reaper is None or self._reaper.done():
-            self._reaper = asyncio.create_task(self._reap_loop())
+    existing = await _discover(settings, metadata)
+    if existing is not None:
+        return AsyncOpenSandboxBackend(existing, default_timeout=settings.sandbox_timeout)
 
-    async def _reap_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self.sweep_interval)
-            try:
-                await self._reap_once()
-            except Exception:  # noqa: BLE001
-                logger.warning("opensandbox reaper sweep failed", exc_info=True)
+    backend = await AsyncOpenSandboxBackend.create(
+        settings.sandbox_image,
+        connection_config=_connection(settings),
+        timeout=timedelta(seconds=settings.sandbox_ttl),
+        default_timeout=settings.sandbox_timeout,
+        volumes=_volumes(settings, assistant_id, thread_id),
+        metadata=metadata,
+    )
+    logger.info("sandbox created (assistant=%s thread=%s)", assistant_id, thread_id)
+    return backend
 
-    async def _reap_once(self) -> None:
-        now = time.monotonic()
-        async with self._lock:
-            stale = [(k, e) for k, e in self._entries.items() if now - e.last_used > self.idle_ttl]
-            for key, _ in stale:
-                del self._entries[key]
-        for key, entry in stale:
-            await self._close(key, entry)
 
-    async def _close(self, key: str, entry: _Entry) -> None:
-        try:
-            await entry.stack.aclose()
-        except Exception:  # noqa: BLE001
-            logger.warning("closing opensandbox failed (key=%s)", key, exc_info=True)
-        else:
-            logger.info("opensandbox reaped (key=%s)", key)
+async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
+    key = (assistant_id, thread_id)
+    if (cached := _handles.get(key)) is not None:
+        return cached
+    lock = _locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if (cached := _handles.get(key)) is not None:
+            return cached
+        backend = await _open(settings, assistant_id, thread_id)
+        _handles[key] = backend
+        return backend
 
 
 class SessionSandbox(BaseSandbox):
-    """按 thread 多路复用的沙箱后端。
+    """按 (assistant, thread) 多路复用的沙箱后端;沙箱失联时重新发现并重试一次。"""
 
-    只实现异步原语（aexecute/aupload_files/adownload_files）；BaseSandbox 由此派生全部
-    异步文件操作。同步方法不支持（Aegra 走 ainvoke）。
-    """
-
-    def __init__(self, manager: SandboxManager, key_fn=thread_key) -> None:
-        self._manager = manager
-        self._key_fn = key_fn
+    def __init__(self, settings: Settings, assistant_id: str) -> None:
+        self._settings = settings
+        self._assistant_id = safe_segment(assistant_id, "default")
 
     @property
     def id(self) -> str:
-        return "opensandbox-session"
+        return f"agentos-{self._assistant_id}"
 
-    async def _with_retry(self, make_coro):
-        """在当前线程沙箱上执行；若沙箱已被回收则驱逐后用新沙箱重试一次。"""
-        key = self._key_fn()
-        backend = await self._manager.acquire(key)
+    async def _call(
+        self, op: Callable[[AsyncOpenSandboxBackend], Awaitable[Any]]
+    ) -> Any:
+        key = (self._assistant_id, safe_segment(current_thread_id(), "default"))
+        backend = await _acquire(self._settings, *key)
         try:
-            return await make_coro(backend)
-        except Exception:  # noqa: BLE001
-            await self._manager.evict(key)
-            return await make_coro(await self._manager.acquire(key))
+            return await op(backend)
+        except Exception:
+            _handles.pop(key, None)
+            return await op(await _acquire(self._settings, *key))
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        def call(backend: BaseSandbox):
-            if timeout is not None and execute_accepts_timeout(type(backend)):
-                return backend.aexecute(command, timeout=timeout)
-            return backend.aexecute(command)
+        return await self._call(lambda b: b.aexecute(command, timeout=timeout))
 
-        return await self._with_retry(call)
+    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        return await self._call(lambda b: b.aread(file_path, offset, limit))
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        return await self._with_retry(lambda backend: backend.aupload_files(files))
+        return await self._call(lambda b: b.aupload_files(files))
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        return await self._with_retry(lambda backend: backend.adownload_files(paths))
+        return await self._call(lambda b: b.adownload_files(paths))
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        raise NotImplementedError(_SYNC_UNSUPPORTED)
+        raise NotImplementedError(_ASYNC_ONLY)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        raise NotImplementedError(_SYNC_UNSUPPORTED)
+        raise NotImplementedError(_ASYNC_ONLY)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        raise NotImplementedError(_SYNC_UNSUPPORTED)
+        raise NotImplementedError(_ASYNC_ONLY)
 
 
-def build_sandbox() -> SessionSandbox | None:
-    """按 AGENTOS_SANDBOX_ENABLED 构造多路复用沙箱；禁用时返回 None。"""
-    if _disabled(os.environ.get("AGENTOS_SANDBOX_ENABLED", "true")):
+def session(settings: Settings, assistant_id: str) -> SessionSandbox | None:
+    """沙箱后端;``AGENTOS_SANDBOX_ENABLED=false`` 时返回 None(开发态)。"""
+    if not settings.sandbox_enabled:
         return None
-    return SessionSandbox(SandboxManager.from_env())
+    return SessionSandbox(settings, assistant_id)

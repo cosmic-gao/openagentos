@@ -1,21 +1,18 @@
-"""配置层：全局 Settings(env) + 每助手 AgentConfig(configurable) + resolve → ResolvedConfig。
+"""配置:每助手 AgentConfig(config.configurable)+ 全局 Settings(env)兜底。
 
-每助手的 model/base_url/api_key/prompt/mcpServers/skills 来自 Aegra assistant 的 config
-字段（config.configurable）；model/base_url/api_key/temperature 缺项回退全局 env。系统提示
-与运行时上下文小工具（configurable、current_thread_id）也集中于此。
+assistant schema:``{"configurable": {"model", "prompt", "api_key", "base_url", "assistant_id"}}``;
+model/api_key/base_url 缺项回退 OPENAI_* 环境变量。
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from langgraph.config import get_config
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-DEFAULT_MODEL = "gpt-4o"
 
 SYSTEM_PROMPT = """\
 You are OpenAgentOS, a capable, methodical general-purpose agent.
@@ -23,16 +20,17 @@ You are OpenAgentOS, a capable, methodical general-purpose agent.
 Operating principles:
 - Plan first. For any non-trivial or multi-step task, use `write_todos` to lay
   out the steps, then work through them and keep the list updated.
-- Use the virtual filesystem (`write_file`, `read_file`, `edit_file`, `ls`,
-  `glob`, `grep`) to hold notes, drafts, and intermediate artifacts instead of
-  keeping everything in the conversation.
+- Your working directory `/workspace` is persistent per conversation — files
+  you create there survive across messages. Use it for notes, drafts, and
+  deliverables instead of keeping everything in the conversation.
+- Reusable skills live under `/workspace/skills`; consult them before solving
+  a problem from scratch.
 - Delegate deep, self-contained research to the `research-agent` subagent via
   the `task` tool. Give it a precise, standalone question and let it return a
   synthesized answer; don't micromanage its steps.
-- When you produce a file the user should download (report, spreadsheet, image,
-  archive, …), call `export_artifact` with its sandbox path and give the user
-  the returned download link. Keep scratch/intermediate files in the filesystem;
-  export only deliverables. (Available only when the sandbox is enabled.)
+- When a file in `/workspace` is a deliverable the user should download
+  (report, spreadsheet, image, archive, …), call `share_file` with its path
+  and give the user the returned link. Do not share scratch files.
 - State assumptions explicitly, cite sources when you rely on web results, and
   finish with a clear, well-structured answer.
 """
@@ -49,16 +47,32 @@ You are a meticulous research subagent.
 
 
 class Settings(BaseSettings):
-    """全局兜底（env）。每助手可在 assistant config 覆盖 model/base_url/api_key/temperature。"""
-
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", protected_namespaces=()
+        env_prefix="AGENTOS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        protected_namespaces=(),
     )
 
-    model: str = Field(default=DEFAULT_MODEL, validation_alias="AGENTOS_MODEL")
+    model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
     base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
-    temperature: float | None = Field(default=None, validation_alias="AGENTOS_TEMPERATURE")
+
+    workspace: str = "workspace"
+    workspace_host: str | None = None
+    workspace_claim: str | None = None
+    public_url: str = ""
+
+    sandbox_enabled: bool = True
+    sandbox_image: str = "python:3.12"
+    sandbox_ttl: int = 1800
+    sandbox_timeout: int | None = None
+
+    opensandbox_domain: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_DOMAIN")
+    opensandbox_api_key: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_API_KEY")
+    protocol: str = "http"
+    server_proxy: bool = True
 
 
 def get_settings() -> Settings:
@@ -66,17 +80,13 @@ def get_settings() -> Settings:
 
 
 class AgentConfig(BaseModel):
-    """每助手配置，从 assistant 的 config.configurable 解析（逐字段容错）。"""
+    model_config = ConfigDict(extra="ignore")
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    model: str | None = Field(default=None, validation_alias=AliasChoices("OPENAI_MODEL", "model"))
-    base_url: str | None = Field(default=None, validation_alias=AliasChoices("OPENAI_BASE_URL", "base_url"))
-    api_key: str | None = Field(default=None, validation_alias=AliasChoices("OPENAI_API_KEY", "api_key"))
-    prompt: str | None = Field(default=None, validation_alias=AliasChoices("prompt", "system_prompt"))
-    temperature: float | None = None
-    mcp_servers: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("mcpServers", "mcp_servers"))
-    skills: list[str] = Field(default_factory=list)
+    model: str | None = None
+    prompt: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    assistant_id: str | None = None
 
     @classmethod
     def parse(cls, configurable: dict[str, Any] | None) -> AgentConfig:
@@ -92,21 +102,14 @@ class ResolvedConfig:
     base_url: str | None
     api_key: str | None
     prompt: str | None
-    temperature: float | None
-    mcp_servers: dict[str, Any] = field(default_factory=dict)
-    skills: list[str] = field(default_factory=list)
 
 
 def resolve(config: AgentConfig, settings: Settings) -> ResolvedConfig:
-    """合并每助手 config 与全局 settings（config 优先，缺项回退 env）。"""
     return ResolvedConfig(
         model=config.model or settings.model,
         base_url=config.base_url or settings.base_url,
         api_key=config.api_key or settings.api_key,
         prompt=config.prompt,
-        temperature=config.temperature if config.temperature is not None else settings.temperature,
-        mcp_servers=dict(config.mcp_servers),
-        skills=list(config.skills),
     )
 
 
@@ -115,25 +118,20 @@ def configurable(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def current_thread_id() -> str:
-    """当前会话线程 id（沙箱按线程隔离）；不在图执行上下文时回退 default。"""
+    """当前运行的 thread id;不在图执行上下文时回退 default。"""
     try:
         cfg = get_config() or {}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "default"
     conf = cfg.get("configurable") or {}
     meta = cfg.get("metadata") or {}
     return conf.get("thread_id") or meta.get("thread_id") or "default"
 
 
-_UNSAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]")
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
-def safe_segment(value: str, fallback: str = "", *, strip_dots: bool = True) -> str:
-    """消毒单段路径名：非安全字符替换为下划线；strip_dots 时再剥离首尾点/下划线；空则回退。
-
-    集中于此供 artifacts / builder 复用（参考项目把这类路径安全放在 config.segment）。
-    """
-    cleaned = _UNSAFE_SEGMENT.sub("_", value or "")
-    if strip_dots:
-        cleaned = cleaned.strip("._")
+def safe_segment(value: str | None, fallback: str = "") -> str:
+    """消毒单段路径名:非安全字符替换为下划线,剥离首尾点/下划线,空则回退。"""
+    cleaned = _UNSAFE.sub("_", value or "").strip("._")
     return cleaned or fallback

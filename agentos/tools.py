@@ -1,9 +1,14 @@
-"""agent 工具（DeepAgents 内置工具之外）。"""
+"""agent 工具:internet_search 与 share_file(共享磁盘直链,无需搬运字节)。"""
 
 from __future__ import annotations
 
 import os
+from pathlib import PurePosixPath
 from typing import Literal
+from urllib.parse import quote
+
+from agentos import workspace
+from agentos.config import Settings, current_thread_id, safe_segment
 
 
 def internet_search(
@@ -34,40 +39,40 @@ def internet_search(
     )
 
 
-def default_tools() -> list:
-    return [internet_search]
+def relative(path: str) -> str | None:
+    """沙箱路径 → /workspace 内相对路径;越界或穿越返回 None。"""
+    parts = [p for p in PurePosixPath(path).parts if p not in ("/", ".")]
+    if parts[: 1] == ["workspace"]:
+        parts = parts[1:]
+    if not parts or ".." in parts:
+        return None
+    return "/".join(parts)
 
 
-def build_export_artifact(sandbox):
-    """构造 `export_artifact` 工具，闭包捕获与 backend 同一个 SessionSandbox。
+def build_share(settings: Settings, assistant_id: str):
+    """构造 share_file:文件已在共享磁盘上,只校验存在并返回下载链接。"""
 
-    工具把沙箱内文件字节 download 出来，写到 thread 作用域的产物目录，返回下载 URL。
-    与 backend 共用同一沙箱实例，确保命中同一线程容器（否则会连到另一个沙箱）。
-    """
-    import posixpath
+    def share_file(path: str) -> str:
+        """Share a file from /workspace so the user can download it.
 
-    from agentos import artifacts
-    from agentos.config import current_thread_id
-
-    async def export_artifact(path: str, filename: str | None = None) -> str:
-        """Export a file from the sandbox so the user can download it.
-
-        Use this for deliverable files the user should receive (reports,
-        spreadsheets, images, archives). Returns a download URL to give the
-        user. Do NOT export scratch or intermediate files — keep those in the
-        filesystem.
+        Use this for deliverables the user should receive (reports,
+        spreadsheets, images, archives). Returns a download link to give the
+        user. Do NOT share scratch or intermediate files.
 
         Args:
-            path: Absolute path of the file inside the sandbox (e.g. "/work/report.xlsx").
-            filename: Optional download name; defaults to the file's base name.
+            path: Path of the file inside the sandbox (e.g. "/workspace/report.xlsx").
         """
-        responses = await sandbox.adownload_files([path])
-        if not responses or responses[0].content is None:
-            detail = responses[0].error if responses else "no response"
-            return f"Failed to export '{path}': {detail}"
-        data = responses[0].content
-        name = filename or posixpath.basename(path) or "artifact"
-        rel = artifacts.store_bytes(current_thread_id(), name, data)
-        return f"Exported '{path}' ({len(data)} bytes). Download URL to give the user: {artifacts.public_url(rel)}"
+        rel = relative(path)
+        if rel is None:
+            return f"Invalid path: {path!r} (must be inside /workspace)"
+        thread_id = safe_segment(current_thread_id(), "default")
+        target = workspace.thread(settings, assistant_id, thread_id) / rel
+        if not target.is_file():
+            return f"File not found: {path!r}"
+        base = settings.public_url.rstrip("/")
+        return (
+            f"Download link for the user: "
+            f"{base}/files/{assistant_id}/{thread_id}/{quote(rel)}"
+        )
 
-    return export_artifact
+    return share_file

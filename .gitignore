@@ -19,8 +19,8 @@ __pycache__/
 .langgraph_api/
 .langgraph/
 
-# Session artifacts (per-thread download store, served by the /files route)
-.artifacts/
+# Shared disk (assistant assets + per-thread persistent files)
+workspace/
 
 # Build
 dist/

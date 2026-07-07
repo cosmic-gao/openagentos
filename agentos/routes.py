@@ -1,26 +1,23 @@
-"""Aegra 自定义 HTTP：会话产物下载路由。
-
-`aegra.json` 的 `http.app` 指向本模块的 `app`；Aegra 会把核心路由并入本 app、合并
-lifespan，并在 `enable_custom_route_auth=true` 时为这些路由套上 Aegra 鉴权依赖
-（当前无鉴权即放行，将来配置 JWT 后自动生效）。路由从 thread 作用域的产物目录
-（见 `agentos/artifacts.py`）以附件形式回传文件。
-"""
+"""Aegra 自定义 HTTP:从共享磁盘回传线程文件(share_file 生成的下载链接指向这里)。"""
 
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from agentos import artifacts
+from agentos import workspace
+from agentos.config import get_settings, safe_segment
 
-app = FastAPI(title="OpenAgentOS artifacts")
+app = FastAPI(title="OpenAgentOS files")
 
 
-@app.get("/files/{thread_id}/{name}")
-async def download_artifact(thread_id: str, name: str) -> FileResponse:
-    """下载某线程导出的产物（以附件形式）。"""
-    path = artifacts.resolve(thread_id, name)
-    if path is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
-    # FileResponse 带 filename 时默认 Content-Disposition: attachment。
-    return FileResponse(path, filename=path.name)
+@app.get("/files/{assistant_id}/{thread_id}/{rel:path}")
+async def download(assistant_id: str, thread_id: str, rel: str) -> FileResponse:
+    settings = get_settings()
+    base = workspace.thread(
+        settings, safe_segment(assistant_id, "default"), safe_segment(thread_id, "default")
+    )
+    target = (base / rel).resolve()
+    if not target.is_relative_to(workspace.root(settings)) or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(target, filename=target.name)
