@@ -1,0 +1,40 @@
+# OpenAgentOS — self-hosted AI agent OS: DeepAgents (agent harness) on Aegra (server).
+#
+# Managed with uv. Pinned to Python 3.12 for the widest native-wheel coverage
+# (Aegra requires >=3.12; some transitive C-extension deps still lag on 3.14).
+
+[project]
+name = "openagentos"
+version = "0.1.0"
+description = "Self-hosted AI Agent OS — DeepAgents on Aegra"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Server / deployment layer (self-hosted Agent Protocol server).
+    "aegra-cli>=0.9.24,<0.10",
+    # Agent harness (planning, filesystem, subagents, skills) — returns a LangGraph graph.
+    "deepagents>=0.6.12,<0.7",
+    # Chat model client for the OpenAI-compatible gateway (base_url override).
+    "langchain-openai>=1.0",
+    # Optional MCP tool integration (QuickBooks / ClickUp / your own servers).
+    "langchain-mcp-adapters>=0.1",
+    # Web search backend for the research subagent (optional at runtime).
+    "tavily-python>=0.5",
+    # LangGraph client SDK, used by scripts/smoke_test.py.
+    "langgraph-sdk>=0.1",
+    # .env loading.
+    "python-dotenv>=1.0",
+    # 沙箱执行：把 OpenSandbox 容器桥接为 DeepAgents backend（每线程一个沙箱）。
+    "deepagents-opensandbox",
+    "opensandbox>=0.1.13",
+]
+
+[tool.uv]
+# This is an application, not a distributable library — uv only manages the
+# dependency venv. The local `agentos` package is imported via aegra.json's
+# `dependencies: ["."]`, so no build backend is required.
+package = false
+
+[tool.uv.sources]
+# deepagents-opensandbox 尚未发布到 PyPI，从 git 安装。
+deepagents-opensandbox = { git = "https://github.com/cosmic-gao/opensandbox.git", branch = "main" }
