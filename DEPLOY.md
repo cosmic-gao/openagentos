@@ -8,18 +8,20 @@
 |---|---|
 | `postgres`（pgvector） | Aegra 持久化 / 检查点 / 语义 store |
 | `redis` | Aegra 任务队列 / SSE pub-sub / 崩溃恢复 |
+| `sandbox-config` | 一次性 init：把 `AGENTOS_WORKSPACE_HOST` 注入 `sandbox.toml` 的 `allowed_host_paths` |
 | `opensandbox-server` | 经宿主 docker.sock 拉起/管理沙箱容器（execd 镜像 `opensandbox/execd`） |
 | `openagentos`（app） | `aegra serve`，托管 `agentos` 图 |
 
-一块**共享磁盘**（宿主 `AGENTOS_WORKSPACE_HOST`）同时挂给 app 与每个沙箱：app 读 `.mcp.json`、
-回传下载；沙箱按 `subPath` bind `/workspace`（线程私有）与 `/workspace/skills`（助手级）。
+一块**外挂磁盘**上的**共享工作区**（宿主 `AGENTOS_WORKSPACE_HOST`，唯一真源）同时挂给 app 与每个
+沙箱：app 读 `.mcp.json`、回传下载；沙箱按 `subPath` bind `/workspace`（线程私有）与
+`/workspace/skills`（助手级）。该路径既是 bind 源，又被注入 `sandbox.toml`（见下方「注意」）。
 
 ## 目录约定
 
 - `/data/git/openagentos` — 代码（`git clone`，只读源）。
 - `/data/openagentos` — 编译 / 部署目录（compose 在此运行）。代码从 git 目录同步过来
   （`rsync` / CI / 手动皆可），`.env` 独立维护。
-- `/data/openagentos/workspace` — 共享工作区宿主目录（`AGENTOS_WORKSPACE_HOST`）。
+- `/data/openagentos/workspace` — 共享工作区宿主目录（`AGENTOS_WORKSPACE_HOST`），应在外挂磁盘挂载点下。
 
 > 也可直接在 `/data/git/openagentos` 里跑 compose，省去同步；两段路径是「源码 vs 部署」的约定，按需取舍。
 
@@ -35,8 +37,9 @@
 # 1) 拉代码
 git clone <repo-url> /data/git/openagentos
 
-# 2) 部署目录 + 共享工作区 + .env（唯一必改 POSTGRES_PASSWORD）
+# 2) 部署目录 + 共享工作区（在外挂盘挂载点下）+ 未挂载哨兵 + .env（唯一必改 POSTGRES_PASSWORD）
 mkdir -p /data/openagentos /data/openagentos/workspace
+touch /data/openagentos/workspace/.mounted   # 未挂载保护哨兵；须落在外挂盘上（盘没挂→文件不在→app 拒启）
 rsync -a --exclude='.env' --exclude='.git/' --exclude='.venv/' \
   /data/git/openagentos/ /data/openagentos/
 cp /data/git/openagentos/.env.example /data/openagentos/.env
@@ -70,9 +73,16 @@ cd /data/openagentos && docker compose up -d --build
 
 ## 注意
 
-- **`sandbox.toml`**：默认 `host_ip = host.docker.internal`、
-  `allowed_host_paths = ['/data/openagentos/workspace']`。换宿主 IP（Linux 被防火墙挡时）或
-  换工作区路径时，手动改这两处，并 `docker compose up -d --force-recreate opensandbox-server` 使其生效。
+- **工作区路径单一真源**：只在 `.env` 的 `AGENTOS_WORKSPACE_HOST` 配一处——compose 既用它做
+  app/沙箱的 bind 源，又经 `sandbox-config` 服务把它注入 `sandbox.toml` 的 `allowed_host_paths`
+  （无需再改 `sandbox.toml`）。改了路径后 `docker compose up -d` 即重渲染生效。
+- **`sandbox.toml` 的 `host_ip`**：默认 `host.docker.internal`（Docker Desktop 可用）；Linux 被
+  防火墙挡时改宿主真实 IP，并 `docker compose up -d --force-recreate opensandbox-server`。
+- **外挂盘写权限**：app 容器默认以 `0:0`（root）运行，与沙箱一致，bind 外挂盘直接可写、双方文件
+  互通。收紧为非 root 时，设 `.env` 的 `AGENTOS_UID/AGENTOS_GID` 为外挂盘属主，并 `chown -R` 工作区。
+- **未挂载保护**：`.env` 的 `AGENTOS_WORKSPACE_SENTINEL`（默认 `.mounted`）——app 启动校验该文件在
+  工作区内存在，否则拒绝启动，防外挂盘没挂好时把数据写到系统盘。部署时务必 `touch <workspace>/.mounted`；
+  留空关闭校验。
 - 沙箱由宿主 Docker 经 `docker.sock` 拉起，与 compose 服务同网络
   （`sandbox.toml` 的 `network_mode = openagentos_default`，即 `<部署目录名>_default`）。
 - 迁移：`RUN_MIGRATIONS_ON_STARTUP=true` 启动自动迁移；多实例部署设 `false` 并带外

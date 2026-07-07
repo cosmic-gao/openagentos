@@ -1,5 +1,5 @@
-# OpenAgentOS 全栈：Aegra 依赖（postgres + redis）+ OpenSandbox 服务器 + app。
-# Linux 与 Windows Docker Desktop（WSL2）通用。连接配置见 .env（cp .env.example .env）。
+# OpenAgentOS 全栈：postgres + redis（Aegra 依赖）+ OpenSandbox 服务器 + app。Linux 与
+# Windows Docker Desktop（WSL2）通用。连接配置见 .env（cp .env.example .env）。
 services:
   # ── Aegra 依赖：PostgreSQL（持久化/检查点/pgvector）──
   postgres:
@@ -38,6 +38,23 @@ services:
       retries: 5
     logging: *logging
 
+  # ── 一次性 init：把 AGENTOS_WORKSPACE_HOST 注入 sandbox.toml 的 allowed_host_paths ──
+  # 该配置不支持环境变量，故从模板渲染出 config 写入 sandbox_config 卷（单引号字面量兼容 Windows 路径）。
+  sandbox-config:
+    image: busybox:1.36
+    container_name: ${PROJECT_NAME:-openagentos}-sandbox-config
+    environment:
+      AGENTOS_WORKSPACE_HOST: ${AGENTOS_WORKSPACE_HOST:?请在 .env 设置 AGENTOS_WORKSPACE_HOST}
+    volumes:
+      - ./sandbox.toml:/tmpl/sandbox.toml:ro
+      - sandbox_config:/out
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cp /tmpl/sandbox.toml /out/config.toml
+        printf "\n[storage]\nallowed_host_paths = ['%s']\n" "$$AGENTOS_WORKSPACE_HOST" >> /out/config.toml
+
   # ── OpenSandbox 服务器：经 docker.sock 拉起/管理沙箱容器 ──
   opensandbox-server:
     image: opensandbox/server:latest
@@ -48,12 +65,14 @@ services:
     volumes:
       # Docker Desktop（Win/mac）与 Linux 都在此路径暴露守护进程 socket。
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./sandbox.toml:/etc/opensandbox/config.toml:ro
+      - sandbox_config:/etc/opensandbox:ro
     environment:
       SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
       OPENSANDBOX_INSECURE_SERVER: "YES"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      sandbox-config: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
       interval: 30s
@@ -73,20 +92,35 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
+    # 默认 0:0(root)，与沙箱一致，bind 外挂盘直接可写；收紧为非 root 见 .env。
+    user: "${AGENTOS_UID:-0}:${AGENTOS_GID:-0}"
     env_file: [.env]
     environment:
-      # compose 内部网络寻址（覆盖 .env 里的本地调试值）。
+      # compose 内网寻址（覆盖 .env 的本地调试值）。
       POSTGRES_HOST: postgres
       REDIS_URL: redis://redis:${REDIS_PORT:-16379}/0
       OPEN_SANDBOX_DOMAIN: opensandbox-server:8080
       PORT: ${PORT:-2026}
-      # app 视角的共享磁盘根（下方 bind 的挂载点）；沙箱 bind 用宿主路径 AGENTOS_WORKSPACE_HOST。
       AGENTOS_WORKSPACE: /workspace-data
     ports:
       - "${PORT:-2026}:${PORT:-2026}"
     volumes:
-      # app 与所有沙箱共用同一宿主目录（app 读 .mcp.json / 回传下载，沙箱按 subPath bind）。
-      - "${AGENTOS_WORKSPACE_HOST:-/data/openagentos/workspace}:/workspace-data"
+      # app 与沙箱共用此宿主目录；create_host_path:false 使外挂盘/目录缺失时启动失败，不误建空目录。
+      - type: bind
+        source: ${AGENTOS_WORKSPACE_HOST:?请在 .env 设置 AGENTOS_WORKSPACE_HOST}
+        target: /workspace-data
+        bind:
+          create_host_path: false
+    # 未挂载保护：哨兵文件（AGENTOS_WORKSPACE_SENTINEL）不在则拒启，防外挂盘没挂好时写入系统盘；留空跳过。
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ -n "$$AGENTOS_WORKSPACE_SENTINEL" ] && [ ! -f "$$AGENTOS_WORKSPACE/$$AGENTOS_WORKSPACE_SENTINEL" ]; then
+          echo "[fatal] 工作区哨兵 '$$AGENTOS_WORKSPACE_SENTINEL' 不在 $$AGENTOS_WORKSPACE 下——外挂盘未挂载？" >&2
+          exit 1
+        fi
+        exec aegra serve
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -105,3 +139,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  sandbox_config:

@@ -28,6 +28,7 @@ mode = "direct"
 type = "sqlite"
 path = "/root/.opensandbox/opensandbox.db"
 
-[storage]
-# 允许沙箱 bind mount 的宿主路径（须与 .env 的 AGENTOS_WORKSPACE_HOST 一致）。
-allowed_host_paths = ['/data/openagentos/workspace']
+# [storage].allowed_host_paths 由 compose 的 sandbox-config 从 .env 的 AGENTOS_WORKSPACE_HOST
+# 注入（单一真源），此处不写死。不经 compose 直接运行时手动追加：
+#   [storage]
+#   allowed_host_paths = ['/abs/path/to/workspace']
