@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,3 +123,17 @@ def current_thread_id() -> str:
     conf = cfg.get("configurable") or {}
     meta = cfg.get("metadata") or {}
     return conf.get("thread_id") or meta.get("thread_id") or "default"
+
+
+_UNSAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_segment(value: str, fallback: str = "", *, strip_dots: bool = True) -> str:
+    """消毒单段路径名：非安全字符替换为下划线；strip_dots 时再剥离首尾点/下划线；空则回退。
+
+    集中于此供 artifacts / builder 复用（参考项目把这类路径安全放在 config.segment）。
+    """
+    cleaned = _UNSAFE_SEGMENT.sub("_", value or "")
+    if strip_dots:
+        cleaned = cleaned.strip("._")
+    return cleaned or fallback

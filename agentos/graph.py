@@ -7,20 +7,18 @@ prompt/mcpServers/skills（缺项回退全局 env）。每线程沙箱（含 exe
 
 from __future__ import annotations
 
-from agentos import builder, mcp
-from agentos import config as cfg
-from agentos import sandbox as sbx
-from agentos import tools as tls
+from agentos import builder, mcp, sandbox, tools
+from agentos.config import AgentConfig, configurable, get_settings, resolve
 
 
 async def make_graph(config: dict):
-    resolved = cfg.resolve(cfg.AgentConfig.parse(cfg.configurable(config)), cfg.get_settings())
+    resolved = resolve(AgentConfig.parse(configurable(config)), get_settings())
 
     # 每线程沙箱（禁用时 None）；与 export_artifact 共用同一实例，确保命中同一线程容器。
-    box = sbx.build_sandbox()
-    agent_tools = tls.default_tools()
+    box = sandbox.build_sandbox()
+    agent_tools = tools.default_tools()
     if box is not None:
-        agent_tools.append(tls.build_export_artifact(box))
+        agent_tools.append(tools.build_export_artifact(box))
     agent_tools += await mcp.tools(resolved.mcp_servers)
 
     backend, skill_sources = builder.build_backend(resolved.skills, default=box)

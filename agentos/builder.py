@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +10,8 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 
 from agentos import model
-from agentos.config import RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig
+from agentos.config import RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, safe_segment
 from agentos.tools import internet_search
-
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def build_backend(skill_paths: list[str], *, default: Any = None):
@@ -30,7 +27,7 @@ def build_backend(skill_paths: list[str], *, default: Any = None):
     sources: list[str] = []
     used: set[str] = set()
     for path in skill_paths:
-        name = _UNSAFE.sub("_", Path(path).name) or "skills"
+        name = safe_segment(Path(path).name, "skills", strip_dots=False)
         unique, i = name, 1
         while unique in used:
             unique, i = f"{name}-{i}", i + 1
