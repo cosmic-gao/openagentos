@@ -1,0 +1,33 @@
+# OpenSandbox 服务器配置（docker 运行时）。挂进 opensandbox-server 容器
+# （见 docker-compose.yml）。改动后需重启该服务才生效。
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+execd_image = "opensandbox/execd:v1.0.19"
+
+[docker]
+# 沙箱容器加入 compose 网络（<部署目录名>_default，即 openagentos_default），
+# server/app 按容器 IP 直连沙箱，不经宿主端口转发。
+network_mode = "openagentos_default"
+# Docker Desktop 下 host.docker.internal 即可；Linux 若被防火墙挡，deploy 脚本可注入宿主真实 IP。
+host_ip = "host.docker.internal"
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+pids_limit = 4096
+
+[ingress]
+mode = "direct"
+
+[store]
+type = "sqlite"
+path = "/root/.opensandbox/opensandbox.db"
+
+[storage]
+# 允许沙箱 bind mount 的宿主路径（须与 .env 的 AGENTOS_WORKSPACE_HOST 一致）。
+allowed_host_paths = ['/data/openagentos/workspace']

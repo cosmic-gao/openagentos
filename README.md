@@ -147,7 +147,8 @@ openagentos/
 │   ├── sandbox.py          # 每线程临时沙箱：发现/恢复/重建（SessionSandbox）
 │   ├── builder.py          # 组装：model + tools + subagents → create_deep_agent
 │   ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
-│   └── routes.py           # Aegra 自定义 HTTP：/files/{aid}/{tid}/{path} 下载
+│   ├── assets.py           # .deepagent/<aid>/ 资产文件的增删改移（限定目录内）
+│   └── routes.py           # Aegra 自定义 HTTP：线程文件下载 + .deepagent 资产管理
 └── scripts/
     └── smoke_test.py       # 用 LangGraph SDK 流式跑一轮
 ```

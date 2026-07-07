@@ -1,0 +1,107 @@
+# OpenAgentOS 全栈：Aegra 依赖（postgres + redis）+ OpenSandbox 服务器 + app。
+# Linux 与 Windows Docker Desktop（WSL2）通用。连接配置见 .env（cp .env.example .env）。
+services:
+  # ── Aegra 依赖：PostgreSQL（持久化/检查点/pgvector）──
+  postgres:
+    image: pgvector/pgvector:pg14
+    container_name: ${PROJECT_NAME:-openagentos}-postgres
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["-p", "${POSTGRES_PORT:-15432}"]
+    ports:
+      - "${POSTGRES_PORT:-15432}:${POSTGRES_PORT:-15432}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -p ${POSTGRES_PORT:-15432}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: &logging
+      driver: json-file
+      options: {max-size: "20m", max-file: "5"}
+
+  # ── Aegra 依赖：Redis（任务队列 / SSE pub-sub / 崩溃恢复）──
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME:-openagentos}-redis
+    restart: unless-stopped
+    command: ["redis-server", "--port", "${REDIS_PORT:-16379}"]
+    ports:
+      - "${REDIS_PORT:-16379}:${REDIS_PORT:-16379}"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p ${REDIS_PORT:-16379} ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  # ── OpenSandbox 服务器：经 docker.sock 拉起/管理沙箱容器 ──
+  opensandbox-server:
+    image: opensandbox/server:latest
+    container_name: ${PROJECT_NAME:-openagentos}-opensandbox
+    restart: unless-stopped
+    ports:
+      - "${OPEN_SANDBOX_PORT:-8080}:8080"
+    volumes:
+      # Docker Desktop（Win/mac）与 Linux 都在此路径暴露守护进程 socket。
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./sandbox.toml:/etc/opensandbox/config.toml:ro
+    environment:
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+      OPENSANDBOX_INSECURE_SERVER: "YES"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    logging: *logging
+
+  # ── OpenAgentOS app（Aegra 托管 agentos 图）──
+  openagentos:
+    image: "openagentos:${TAG:-latest}"
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: ${PROJECT_NAME:-openagentos}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    env_file: [.env]
+    environment:
+      # compose 内部网络寻址（覆盖 .env 里的本地调试值）。
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:${REDIS_PORT:-16379}/0
+      OPEN_SANDBOX_DOMAIN: opensandbox-server:8080
+      PORT: ${PORT:-2026}
+      # app 视角的共享磁盘根（下方 bind 的挂载点）；沙箱 bind 用宿主路径 AGENTOS_WORKSPACE_HOST。
+      AGENTOS_WORKSPACE: /workspace-data
+    ports:
+      - "${PORT:-2026}:${PORT:-2026}"
+    volumes:
+      # app 与所有沙箱共用同一宿主目录（app 读 .mcp.json / 回传下载，沙箱按 subPath bind）。
+      - "${AGENTOS_WORKSPACE_HOST:-/data/openagentos/workspace}:/workspace-data"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      opensandbox-server: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,os; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','2026')+'/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: "3g"}
+
+volumes:
+  postgres_data:
+  redis_data:
