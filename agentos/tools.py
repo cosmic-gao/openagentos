@@ -1,4 +1,4 @@
-"""agent 工具:internet_search 与 share_file(共享磁盘直链,无需搬运字节)。"""
+"""agent 工具:internet_search 与 download_file(共享磁盘直链,无需搬运字节)。"""
 
 from __future__ import annotations
 
@@ -47,15 +47,15 @@ def relative(path: str) -> str:
     return "/".join(parts)
 
 
-def build_share(settings: Settings, assistant_id: str):
-    """构造 share_file 工具(文件已在共享磁盘,直链下载)。"""
+def build_download(settings: Settings, assistant_id: str):
+    """构造 download_file 工具(文件已在共享磁盘,直链下载)。"""
 
-    def share_file(path: str) -> str:
-        """Share a file from /workspace so the user can download it.
+    def download_file(path: str) -> str:
+        """Give the user a download link for a file in /workspace.
 
         Use this for deliverables the user should receive (reports,
-        spreadsheets, images, archives). Returns a download link to give the
-        user. Do NOT share scratch or intermediate files.
+        spreadsheets, images, archives). Returns a download link to hand to the
+        user. Do NOT expose scratch or intermediate files.
 
         Args:
             path: Path of the file inside the sandbox (e.g. "/workspace/report.xlsx").
@@ -71,4 +71,4 @@ def build_share(settings: Settings, assistant_id: str):
         base = settings.public_url.rstrip("/")
         return f"Download link for the user: {base}/files/{assistant_id}/{thread_id}/{quote(rel)}"
 
-    return share_file
+    return download_file

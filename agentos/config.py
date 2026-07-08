@@ -30,8 +30,8 @@ Operating principles:
   the `task` tool. Give it a precise, standalone question and let it return a
   synthesized answer; don't micromanage its steps.
 - When a file in `/workspace` is a deliverable the user should download
-  (report, spreadsheet, image, archive, …), call `share_file` with its path
-  and give the user the returned link. Do not share scratch files.
+  (report, spreadsheet, image, archive, …), call `download_file` with its path
+  and give the user the returned link. Do not expose scratch files.
 - State assumptions explicitly, cite sources when you rely on web results, and
   finish with a clear, well-structured answer.
 """

@@ -145,7 +145,7 @@ openagentos/
 │   ├── workspace.py        # 共享磁盘布局（.deepagent/<aid>/ 与 <aid>/<tid>/）
 │   ├── model.py            # OpenAI 兼容网关 chat model 工厂（model.build）
 │   ├── mcp.py              # 从 .mcp.json 载入 MCP 工具（parse / tools）
-│   ├── tools.py            # internet_search（Tavily）+ share_file（共享磁盘直链）
+│   ├── tools.py            # internet_search（Tavily）+ download_file（共享磁盘直链）
 │   ├── sandbox.py          # 每线程临时沙箱：发现/恢复/重建（SessionSandbox）
 │   ├── builder.py          # 组装：model + tools + subagents → create_deep_agent
 │   ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
@@ -232,7 +232,7 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `AGENTOS_WORKSPACE` | 共享磁盘根（app 视角，默认 `workspace`） |
 | `AGENTOS_WORKSPACE_HOST` | 沙箱 bind mount 用宿主绝对路径（缺省=上者绝对路径） |
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
-| `AGENTOS_PUBLIC_URL` | 下载链接前缀（`share_file` / `/files` 路由） |
+| `AGENTOS_PUBLIC_URL` | 下载链接前缀（`download_file` / `/files` 路由） |
 | `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
 | `AGENTOS_SANDBOX_ENABLED` | 是否启用沙箱（默认 `true`；`false` 回退 StateBackend） |
 | `OPEN_SANDBOX_DOMAIN` / `OPEN_SANDBOX_API_KEY` | OpenSandbox 服务器地址 / 鉴权 |
