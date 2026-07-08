@@ -26,11 +26,13 @@ app = FastAPI(title="OpenAgentOS files")
 @app.get("/files/{assistant_id}/{thread_id}/{rel:path}")
 async def download(assistant_id: str, thread_id: str, rel: str) -> FileResponse:
     settings = get_settings()
+    # 边界必须是该线程目录本身,而非整个 workspace 根:否则 rel 里的 ../ 可越界到
+    # 其它 assistant/thread(含 .deepagent/<aid>/.mcp.json 内的密钥)。
     base = workspace.thread(
         settings, safe_segment(assistant_id, "default"), safe_segment(thread_id, "default")
-    )
+    ).resolve()
     target = (base / rel).resolve()
-    if not target.is_relative_to(workspace.root(settings)) or not target.is_file():
+    if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(target, filename=target.name)
 

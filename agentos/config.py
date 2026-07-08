@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     sandbox_ttl: int = 1800
     sandbox_timeout: int | None = None
 
+    # 长期记忆:把 /memories/ 路由到跨线程持久的 store(Aegra 注入 AsyncPostgresStore)。
+    memory_enabled: bool = True
+
     opensandbox_domain: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_DOMAIN")
     opensandbox_api_key: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_API_KEY")
     protocol: str = "http"
@@ -87,6 +90,9 @@ class AgentConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     assistant_id: str | None = None
+    # human-in-the-loop:工具名 → True 或 {"allowed_decisions": [...], "description": ...}。
+    # 缺省 None 即不中断(保持默认行为);需 checkpointer,由 Aegra 运行时注入。
+    interrupt_on: dict[str, Any] | None = None
 
     @classmethod
     def parse(cls, configurable: dict[str, Any] | None) -> AgentConfig:

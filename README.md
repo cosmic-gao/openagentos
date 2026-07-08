@@ -61,9 +61,11 @@ workspace/                          ← AGENTOS_WORKSPACE
   `.deepagent/<aid>/skills` → `/workspace/skills`（助手级，跨线程共享）。助手间互不可见。
 
 **按 assistant 构图（graph 工厂）**：aegra.json 指向异步工厂
-[`make_graph(config)`](agentos/graph.py)，Aegra 每次请求用该 assistant 的 `config`
-（含 `assistant_id`）调用它；工厂读共享磁盘上的 `.mcp.json` 载入 MCP 工具，把
-`/workspace/skills` 交给 deepagents 的 `SkillsMiddleware` 渐进式加载。
+[`make_graph(config, runtime)`](agentos/graph.py)，Aegra 每次请求用该 assistant 的 `config`
+调用它；工厂读共享磁盘上的 `.mcp.json` 载入 MCP 工具，把 `/workspace/skills` 交给 deepagents
+的 `SkillsMiddleware` 渐进式加载。工厂**区分 introspection 与执行**：仅真正执行
+（`runtime.execution_runtime` 非 None）时才连 MCP、写盘；schema / 画图等只读调用走轻量路径
+（不连 MCP、不写盘），图拓扑保持一致。
 
 ### 启动 OpenSandbox 服务器
 
@@ -182,7 +184,8 @@ store）。见 <https://docs.aegra.dev/reference/configuration>。
     "prompt": "You are ...",
     "api_key": "sk-...",
     "base_url": "https://your-gateway/v1",
-    "assistant_id": "finance-bot"
+    "assistant_id": "finance-bot",
+    "interrupt_on": { "execute": true }
   }
 }
 ```
@@ -190,6 +193,15 @@ store）。见 <https://docs.aegra.dev/reference/configuration>。
 model/api_key/base_url 缺项回退全局 `OPENAI_*` env；prompt 缺省回退内置 `SYSTEM_PROMPT`。
 MCP 与 skills 不在 config 里——放共享磁盘 `workspace/.deepagent/<assistant_id>/`
 （见「定制 agent」）。
+
+**`assistant_id`（重要）**：Aegra 不会自动把它注入 configurable，缺省即回退到共享的
+`default` 命名空间（skills / .mcp.json / 资产 / 记忆都会被多个助手混用）。**多助手部署务必
+为每个助手在 config 里显式设 `assistant_id`**，且与资产 API URL 里用的值一致。
+
+**`interrupt_on`（human-in-the-loop，可选）**：`{工具名: true}` 或
+`{工具名: {"allowed_decisions": ["approve","edit","reject"], "description": "..."}}`。命中的
+工具在调用前挂起，等客户端用 `Command(resume=...)` 决策后继续（需 checkpointer——Aegra 已
+默认注入）。缺省不中断。常用于对 `execute`（沙箱执行 shell）设人工审批。
 
 ### 环境变量（`.env`，全局兜底）
 
@@ -201,6 +213,7 @@ MCP 与 skills 不在 config 里——放共享磁盘 `workspace/.deepagent/<ass
 | `AGENTOS_WORKSPACE_HOST` | 沙箱 bind mount 用宿主绝对路径（缺省=上者绝对路径） |
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
 | `AGENTOS_PUBLIC_URL` | 下载链接前缀（`share_file` / `/files` 路由） |
+| `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
 | `AGENTOS_SANDBOX_ENABLED` | 是否启用沙箱（默认 `true`；`false` 回退 StateBackend） |
 | `OPEN_SANDBOX_DOMAIN` / `OPEN_SANDBOX_API_KEY` | OpenSandbox 服务器地址 / 鉴权 |
 | `AGENTOS_SANDBOX_IMAGE` | 沙箱镜像（默认 `python:3.12`） |
@@ -270,10 +283,15 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 
 - **持久化**由 Aegra 负责：它在运行时注入 PostgreSQL 的 checkpointer/store，所以
   `graph.py` 不传 `checkpointer`/`store`。线程与 run 重启后自动保留。
-- **长期记忆 / 语义 store**：在 `aegra.json` 加 `store` 块（见配置参考）以开启跨线程的
-  向量记忆。
+- **长期记忆**（默认开启，`AGENTOS_MEMORY_ENABLED`）：经 `CompositeBackend` 把虚拟路径
+  `/memories/` 路由到 `StoreBackend`（落 Aegra 的 PostgreSQL store），**跨该助手所有线程持久**
+  （namespace 按 `assistant_id` 隔离）。启动时加载 `/memories/AGENTS.md`，agent 用 `edit_file`
+  自维护记忆实现跨会话学习。`/workspace`（线程私有）与 `/memories/`（助手级持久）各司其职。
+  想要向量语义检索，再在 `aegra.json` 加 `store.index` 块（见配置参考）。
 - **鉴权**默认无（开发态）。在 `aegra.json` 加 `auth` 块以启用 JWT/OAuth/Firebase ——
   <https://docs.aegra.dev/guides/authentication>。
+  > ⚠️ 自定义路由（`routes.py` 的文件下载 / 资产管理）只走认证、**不做归属鉴权**：开启 auth
+  > 后仍需在处理函数里按 `langgraph_auth_user` 校验该用户是否拥有对应 assistant。多租户部署尤须注意。
 
 ## 部署
 

@@ -17,6 +17,11 @@ SKILLS = "/workspace/skills"
 DEEPAGENT = ".deepagent"
 MCP_FILE = ".mcp.json"
 
+# 长期记忆(虚拟路径,非沙箱磁盘):/memories/ 经 CompositeBackend 路由到 StoreBackend,
+# 跨线程持久。MEMORY_FILE 为启动时加载的 AGENTS.md,agent 用 edit_file 自维护。
+MEMORIES = "/memories"
+MEMORY_FILE = "/memories/AGENTS.md"
+
 
 def root(settings: Settings) -> Path:
     return Path(settings.workspace).expanduser().resolve()

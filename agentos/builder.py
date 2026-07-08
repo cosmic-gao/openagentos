@@ -31,6 +31,8 @@ def build(
     backend: Any,
     tools: list,
     skills: list[str] | None,
+    memory: list[str] | None = None,
+    interrupt_on: dict[str, Any] | None = None,
 ) -> Any:
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
     return create_deep_agent(
@@ -40,4 +42,6 @@ def build(
         subagents=[_research(llm)],
         backend=backend,
         skills=skills,
+        memory=memory,
+        interrupt_on=interrupt_on,
     )
