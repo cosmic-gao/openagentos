@@ -62,7 +62,10 @@ def build_share(settings: Settings, assistant_id: str):
         """
         rel = relative(path)
         thread_id = current_thread_id()
-        target = workspace.thread(settings, assistant_id, thread_id) / rel
+        try:
+            target = workspace.contained(workspace.thread(settings, assistant_id, thread_id), rel)
+        except ValueError:
+            return f"File not found: {path!r}"
         if not target.is_file():
             return f"File not found: {path!r}"
         base = settings.public_url.rstrip("/")

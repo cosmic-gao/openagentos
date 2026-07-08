@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from agentos.config import Settings
+from agentos.config import Settings, safe_segment
 
 WORKSPACE = "/workspace"
 SKILLS = "/workspace/skills"
@@ -27,7 +27,7 @@ def host_root(settings: Settings) -> str:
 
 
 def assistant(settings: Settings, assistant_id: str) -> Path:
-    return root(settings) / DEEPAGENT / assistant_id
+    return root(settings) / DEEPAGENT / safe_segment(assistant_id)
 
 
 def skills(settings: Settings, assistant_id: str) -> Path:
@@ -39,7 +39,16 @@ def mcp(settings: Settings, assistant_id: str) -> Path:
 
 
 def thread(settings: Settings, assistant_id: str, thread_id: str) -> Path:
-    return root(settings) / assistant_id / thread_id
+    return root(settings) / safe_segment(assistant_id) / safe_segment(thread_id)
+
+
+def contained(base: Path, rel: str) -> Path:
+    """把相对路径限制在 base 内;越界(../绝对/符号链接逃逸)抛 ValueError。"""
+    base = base.resolve()
+    target = base.joinpath(*PurePosixPath((rel or "").strip("/")).parts).resolve()
+    if not target.is_relative_to(base):
+        raise ValueError(f"path escapes base: {rel!r}")
+    return target
 
 
 def ensure(settings: Settings, assistant_id: str) -> None:

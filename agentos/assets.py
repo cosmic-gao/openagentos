@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+from agentos import workspace
 
 
 @dataclass(frozen=True)
@@ -15,11 +17,11 @@ class Entry:
 
 
 def _resolve(base: Path, rel: str) -> Path:
-    return base.joinpath(*PurePosixPath((rel or "").strip("/")).parts)
+    return workspace.contained(base, rel)
 
 
 def _rel(base: Path, target: Path) -> str:
-    return target.relative_to(base).as_posix()
+    return target.relative_to(base.resolve()).as_posix()
 
 
 def ls(base: Path, rel: str = "") -> list[Entry]:

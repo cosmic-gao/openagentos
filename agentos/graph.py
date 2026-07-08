@@ -7,7 +7,7 @@ from typing import Any
 from langgraph_sdk.runtime import ServerRuntime
 
 from agentos import builder, mcp, sandbox, tools, workspace
-from agentos.config import AgentConfig, configurable, get_settings, resolve
+from agentos.config import AgentConfig, configurable, get_settings, resolve, safe_segment
 
 
 def _servers(settings, assistant_id: str) -> dict:
@@ -41,7 +41,7 @@ def _memory(settings, assistant_id: str, base: Any) -> tuple[Any, list[str] | No
 async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
     settings = get_settings()
     conf = configurable(config)
-    assistant_id = conf.get("assistant_id") or "default"
+    assistant_id = safe_segment(conf.get("assistant_id"))
     parsed = AgentConfig.model_validate(conf)
     resolved = resolve(parsed, settings)
 

@@ -14,7 +14,10 @@ app = FastAPI(title="OpenAgentOS files")
 
 @app.get("/files/{assistant_id}/{thread_id}/{rel:path}")
 async def download(assistant_id: str, thread_id: str, rel: str) -> FileResponse:
-    target = workspace.thread(get_settings(), assistant_id, thread_id) / rel
+    try:
+        target = workspace.contained(workspace.thread(get_settings(), assistant_id, thread_id), rel)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="file not found") from None
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(target, filename=target.name)

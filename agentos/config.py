@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -172,11 +173,19 @@ def configurable(config: dict[str, Any] | None) -> dict[str, Any]:
     return (config or {}).get("configurable") or {}
 
 
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_segment(value: str | None, fallback: str = "default") -> str:
+    """消毒单段路径名:非安全字符→_、剥离首尾点/下划线(挡 .. 与穿越),空则回退。"""
+    return _UNSAFE.sub("_", value or "").strip("._") or fallback
+
+
 def current_thread_id() -> str:
-    """当前 run 的 thread id;不在图执行上下文时回退 default。"""
+    """当前 run 的 thread id(已消毒);不在图执行上下文时回退 default。"""
     try:
         cfg = get_config() or {}
     except Exception:
         return "default"
     conf = cfg.get("configurable") or {}
-    return conf.get("thread_id") or cfg.get("metadata", {}).get("thread_id") or "default"
+    return safe_segment(conf.get("thread_id") or cfg.get("metadata", {}).get("thread_id"))
