@@ -35,9 +35,7 @@ logger = logging.getLogger(__name__)
 _ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
 _MAX_SLOTS = 256
 
-_TRANSPORT = httpx.AsyncHTTPTransport(
-    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0)
-)
+_transport: Any = None
 _manager: Any = None
 
 
@@ -54,15 +52,22 @@ _slots: OrderedDict[tuple[str, str], _Slot] = OrderedDict()
 
 
 def _connection(settings: Settings) -> Any:
-    """连接配置;显式传共享 transport,SDK 视为用户所有故不会关闭它。"""
+    """连接配置;进程级惰性建共享 transport(须在事件循环内首建),SDK 视为用户所有故不关闭它。"""
+    global _transport
     from opensandbox.config import ConnectionConfig
 
+    if _transport is None:
+        _transport = httpx.AsyncHTTPTransport(
+            limits=httpx.Limits(
+                max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0
+            )
+        )
     return ConnectionConfig(
         domain=settings.opensandbox_domain,
         api_key=settings.opensandbox_api_key,
         protocol=settings.protocol,
         use_server_proxy=settings.server_proxy,
-        transport=_TRANSPORT,
+        transport=_transport,
     )
 
 
@@ -170,9 +175,12 @@ async def _renew(settings: Settings, slot: _Slot) -> None:
     """按半个 TTL 节流续期,防长会话被服务端中途回收;失败留给失联重建兜底。"""
     ttl = settings.sandbox_ttl
     backend = slot.backend
-    if not ttl or backend is None or time.monotonic() - slot.renewed < ttl / 2:
+    if not ttl or backend is None:
         return
-    slot.renewed = time.monotonic()
+    now = time.monotonic()
+    if now - slot.renewed < ttl / 2:
+        return
+    slot.renewed = now
     try:
         await backend.sandbox.renew(timedelta(seconds=ttl))
     except Exception as exc:
@@ -194,8 +202,9 @@ async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> Asy
                 slot.backend = await _open(settings, *key)
                 slot.renewed = time.monotonic()
                 _trim(keep=key)
+    backend = slot.backend
     await _renew(settings, slot)
-    return slot.backend
+    return backend
 
 
 async def _healthy(backend: AsyncOpenSandboxBackend) -> bool:
