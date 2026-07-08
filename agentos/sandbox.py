@@ -4,8 +4,8 @@
 到期后,下一次操作按 metadata 重新发现或重建,同一 subPath 重挂共享磁盘,线程文件无损——
 持久化在卷上,沙箱本身可弃。
 
-句柄按 (assistant, thread) 缓存,已建成的句柄数受 ``_MAX_HANDLES`` 约束:超额时 LRU 丢弃
-空闲句柄(只忘记本地句柄、不 kill,服务端 TTL 负责回收)。后端从不抛异常、失败以结果对象
+句柄按 (assistant, thread) 缓存,缓存槽总数受 ``_MAX_SLOTS`` 约束:超额时 LRU 丢弃最旧的
+空闲(未加锁)槽(只忘记本地句柄、不 kill,服务端 TTL 负责回收)。后端从不抛异常、失败以结果对象
 回传,故按结果判失败;若沙箱确已失联(``is_healthy`` 为假),忘记该句柄并重新发现/重建后
 重试一次。
 """
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
-_MAX_HANDLES = 256
+_MAX_SLOTS = 256  # 缓存槽总数上限(每槽仅一把锁+可选句柄);超额 LRU 丢弃空闲槽,沙箱由服务端 TTL 回收
 
 
 @dataclass
@@ -60,6 +60,11 @@ def _connection(settings: Settings) -> Any:
         protocol=settings.protocol,
         use_server_proxy=settings.server_proxy,
     )
+
+
+def _resource(settings: Settings) -> dict[str, str]:
+    """每沙箱 docker 资源上限(limits);缺省对齐 OpenSandbox SDK 默认 1 CPU / 2Gi。"""
+    return {"cpu": settings.sandbox_cpu, "memory": settings.sandbox_memory}
 
 
 def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
@@ -118,6 +123,7 @@ async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncO
         connection_config=_connection(settings),
         timeout=timedelta(seconds=settings.sandbox_ttl),
         default_timeout=settings.sandbox_timeout,
+        resource=_resource(settings),
         volumes=_volumes(settings, assistant_id, thread_id),
         metadata=metadata,
     )
@@ -126,14 +132,14 @@ async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncO
 
 
 def _trim(keep: tuple[str, str]) -> None:
-    """把已建成的句柄数压回上限:LRU 丢弃最旧的空闲句柄(纯同步,无 await 竞态)。"""
-    while sum(slot.backend is not None for slot in _slots.values()) > _MAX_HANDLES:
+    """把缓存槽总数压回上限:LRU 丢弃最旧的空闲(未加锁)槽(纯同步,无 await 竞态)。
+
+    连同被 ``_forget`` 置空的空槽一并回收,槽数不随出现过的 (assistant, thread) 无界增长;
+    丢弃只忘记本地句柄,沙箱由服务端 TTL 回收。全部在锁中(active)时本轮不裁,待其空闲再裁。
+    """
+    while len(_slots) > _MAX_SLOTS:
         victim = next(
-            (
-                key
-                for key, slot in _slots.items()
-                if key != keep and slot.backend is not None and not slot.lock.locked()
-            ),
+            (key for key, slot in _slots.items() if key != keep and not slot.lock.locked()),
             None,
         )
         if victim is None:

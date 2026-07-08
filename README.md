@@ -276,6 +276,11 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 兼容 Claude/Cursor 风格：可用 `type`（`stdio`/`sse`/`http`）代替 `transport`，或省略（据
 `command`/`url` 自动推断）。
 
+> ⚠️ **容器部署下仅远程 transport 可用**：app 镜像（`python:3.12-slim` + venv）不含 `node`/`npx`/`uvx`，
+> 故 `stdio` 类 server（如上面的 `npx …`）在 compose / K8s 里**无法拉起**；请用 `streamable_http` / `sse`
+> 远程 server。本地 `uv run aegra dev` 因宿主自带 node 而可用 stdio。需要容器内 stdio，请在 Dockerfile
+> 装上对应运行时（如 node）。
+
 **换模型** — 每助手在 assistant config 设 `model`/`base_url`，或改全局 `OPENAI_*` env。
 若想直接用 Anthropic/Google 而非网关，把 `agentos/model.py` 里的 `ChatOpenAI` 换成
 `init_chat_model("anthropic:...")`（deepagents 与模型无关）。
@@ -290,13 +295,16 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
   自维护记忆实现跨会话学习。`/workspace`（线程私有）与 `/memories/`（助手级持久）各司其职。
   想要向量语义检索，再在 `aegra.json` 加 `store.index` 块（见配置参考）。
 - **鉴权**由 `aegra.json` 的 `auth` 块启用，指向 [agentos/auth.py](agentos/auth.py)：从请求头
-  `x-tenant-id` / `x-user-id` 解析身份（`identity = <tenant>:<user>`，缺任一即 401）。启用后
-  **所有** Agent Protocol 端点与自定义路由都要求带这两个头——`scripts/smoke_test.py` 及任何客户端
-  须在请求头里带 `x-tenant-id` / `x-user-id`。改用 JWT/OAuth/Firebase 见
+  `x-tenant-id` / `x-user-id` 解析身份（`identity = <tenant>:<user>`）。**缺头不拒绝**——回退
+  `default` / `anonymous`，故当前 auth 只做**身份标注（审计）**、不做强制。此版 Aegra 里 `AUTH_TYPE`
+  不控制它（`noop`/`custom` 等价），真正的开关是这里的 `auth` 块；要"缺头即 401"，把 auth.py 的回退
+  改成抛 `Auth.exceptions.HTTPException(status_code=401)`。改用 JWT/OAuth/Firebase 见
   <https://docs.aegra.dev/guides/authentication>。
-  > ⚠️ 目前只做**认证**（确定"你是谁"），不做**归属鉴权**（不校验"你能否访问这个 assistant/thread"）：
-  > 两个头只填充身份、不自动隔离数据。要按租户/用户隔离，需加 `@auth.on` 处理器（往 metadata 注入
-  > owner 并按 owner 过滤），或在 `routes.py` 处理函数里按 `user` 显式校验。
+  > ⚠️ **数据隔离的键是 `assistant_id` + `thread_id`，与这两个头无关**：磁盘布局、记忆 namespace、
+  > 沙箱 metadata 只用这两个 id；`x-tenant-id` / `x-user-id` 仅填充身份、不参与分区。本项目把
+  > 「租户↔assistant、用户↔thread」的归属放在**上游业务层**：`thread_id` 由 Aegra 服务端强制、
+  > 客户端改不动；但 `assistant_id` 不被钉死（run 请求体可覆盖），故上游须**权威写入 `assistant_id`
+  > 并防止客户端覆盖**。要在 Aegra 内做归属鉴权，加 `@auth.on` 处理器或在 `routes.py` 里按 `user` 校验。
 
 ## 部署
 

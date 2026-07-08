@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     sandbox_image: str = "python:3.12"
     sandbox_ttl: int = 1800
     sandbox_timeout: int | None = None
+    # 每沙箱资源上限(docker limits);缺省对齐 OpenSandbox SDK 默认 1 CPU / 2Gi。
+    sandbox_cpu: str = "1"
+    sandbox_memory: str = "2Gi"
 
     # 长期记忆:把 /memories/ 路由到跨线程持久的 store(Aegra 注入 AsyncPostgresStore)。
     memory_enabled: bool = True
