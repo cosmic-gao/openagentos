@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from agentos import assets, workspace
-from agentos.config import get_settings
+from agentos.config import get_settings, safe_segment
 
 # 必须直接挂 @app,勿 include_router:Aegra 的自定义路由鉴权只扫 app.routes 里的真 APIRoute。
 app = FastAPI(title="OpenAgentOS files")
@@ -63,9 +63,10 @@ class MoveBody(BaseModel):
     dest: str
 
 
-@app.get("/files/{assistant_id}/{thread_id}/{rel:path}")
-def download(assistant_id: str, thread_id: str, rel: str) -> FileResponse:
-    target = workspace.contained(workspace.thread(get_settings(), assistant_id, thread_id), rel)
+# 沙箱产物只按 thread 分区,不暴露 assistant_id;取自 sandbox/<tid>/storage/。
+@app.get("/files/{thread_id}/{rel:path}")
+def download(thread_id: str, rel: str) -> FileResponse:
+    target = workspace.contained(workspace.storage(get_settings(), thread_id), rel)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(target, filename=target.name)
@@ -75,6 +76,15 @@ def download(assistant_id: str, thread_id: str, rel: str) -> FileResponse:
 def list_files(assistant_id: str, path: str = "", recursive: bool = False) -> list[assets.Entry]:
     lister = assets.walk if recursive else assets.ls
     return lister(_dir(assistant_id), path)
+
+
+@app.get("/assistants/{assistant_id}/download", tags=["Assistants"])
+def download_assets(assistant_id: str) -> Response:
+    """把该助手 .deepagent/<aid>/ 下全部内容打包成 zip 下载。"""
+    data = assets.pack(_dir(assistant_id))
+    filename = f"{safe_segment(assistant_id)}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=data, media_type="application/zip", headers=headers)
 
 
 @app.get("/assistants/{assistant_id}/files/{rel:path}", tags=["Assistants"])

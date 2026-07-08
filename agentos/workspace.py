@@ -1,4 +1,4 @@
-"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,<aid>/<tid>/ 存线程持久文件。"""
+"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,sandbox/<tid>/{storage,tmp} 存会话沙箱文件。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from agentos.config import Settings, safe_segment
 WORKSPACE = "/workspace"
 SKILLS = "/workspace/skills"
 DEEPAGENT = ".deepagent"
+SANDBOX = "sandbox"
 MCP_FILE = ".mcp.json"
 
 # 虚拟路径(非磁盘):/memories/ 经 CompositeBackend 路由到持久 store,跨线程
@@ -38,8 +39,19 @@ def mcp(settings: Settings, assistant_id: str) -> Path:
     return assistant(settings, assistant_id) / MCP_FILE
 
 
-def thread(settings: Settings, assistant_id: str, thread_id: str) -> Path:
-    return root(settings) / safe_segment(assistant_id) / safe_segment(thread_id)
+def storage(settings: Settings, thread_id: str) -> Path:
+    """沙箱持久文件区(挂到沙箱 /workspace);下载接口从此处取,只按 thread 分区。"""
+    return root(settings) / SANDBOX / safe_segment(thread_id) / "storage"
+
+
+def tmp(settings: Settings, thread_id: str) -> Path:
+    """沙箱临时文件区(挂到沙箱 /tmp);只按 thread 分区。"""
+    return root(settings) / SANDBOX / safe_segment(thread_id) / "tmp"
+
+
+def under(settings: Settings, path: Path) -> str:
+    """path 相对 workspace 根的 posix 子路径(沙箱挂载 subPath 用)。"""
+    return path.relative_to(root(settings)).as_posix()
 
 
 def contained(base: Path, rel: str) -> Path:

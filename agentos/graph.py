@@ -48,7 +48,7 @@ async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
     # 仅真正执行时载 MCP、写盘;introspection(schema/画图)走轻量路径,不影响图拓扑
     executing = runtime is None or runtime.execution_runtime is not None
 
-    agent_tools = [tools.internet_search, tools.build_download(settings, assistant_id)]
+    agent_tools = [tools.internet_search, tools.build_download(settings)]
     if executing:
         workspace.ensure(settings, assistant_id)
         agent_tools += await mcp.tools(_servers(settings, assistant_id))

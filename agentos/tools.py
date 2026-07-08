@@ -47,7 +47,7 @@ def relative(path: str) -> str:
     return "/".join(parts)
 
 
-def build_download(settings: Settings, assistant_id: str):
+def build_download(settings: Settings):
     """构造 download_file 工具(文件已在共享磁盘,直链下载)。"""
 
     def download_file(path: str) -> str:
@@ -63,12 +63,12 @@ def build_download(settings: Settings, assistant_id: str):
         rel = relative(path)
         thread_id = current_thread_id()
         try:
-            target = workspace.contained(workspace.thread(settings, assistant_id, thread_id), rel)
+            target = workspace.contained(workspace.storage(settings, thread_id), rel)
         except ValueError:
             return f"File not found: {path!r}"
         if not target.is_file():
             return f"File not found: {path!r}"
         base = settings.public_url.rstrip("/")
-        return f"Download link for the user: {base}/files/{assistant_id}/{thread_id}/{quote(rel)}"
+        return f"Download link for the user: {base}/files/{thread_id}/{quote(rel)}"
 
     return download_file

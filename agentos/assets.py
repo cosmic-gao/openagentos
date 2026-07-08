@@ -97,6 +97,18 @@ def unpack(base: Path, rel: str, data: bytes) -> list[str]:
     return out
 
 
+def pack(base: Path, rel: str = "") -> bytes:
+    """把 base/rel 目录打包成 zip 字节(供整目录下载);跳过 VCS 目录,目录不存在则空包。"""
+    top = _resolve(base, rel)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for child in sorted(top.rglob("*")) if top.is_dir() else []:
+            arc = child.relative_to(top)
+            if child.is_file() and _SKIP_DIRS.isdisjoint(arc.parts):
+                zf.write(child, arc.as_posix())
+    return buf.getvalue()
+
+
 def create(base: Path, rel: str, content: str = "") -> str:
     target = _resolve(base, rel)
     if target.exists():

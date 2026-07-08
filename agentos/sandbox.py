@@ -71,9 +71,14 @@ def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
 
 
 def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
+    # workspace→持久区、/tmp→临时区(只按 thread 分区);skills 仍按 assistant 挂载(跨线程复用)
+    ws = workspace.under(settings, workspace.storage(settings, thread_id))
+    tmp = workspace.under(settings, workspace.tmp(settings, thread_id))
+    sk = workspace.under(settings, workspace.skills(settings, assistant_id))
     return [
-        _volume(settings, "workspace", workspace.WORKSPACE, f"{assistant_id}/{thread_id}"),
-        _volume(settings, "skills", workspace.SKILLS, f"{workspace.DEEPAGENT}/{assistant_id}/skills"),
+        _volume(settings, "workspace", workspace.WORKSPACE, ws),
+        _volume(settings, "tmp", "/tmp", tmp),
+        _volume(settings, "skills", workspace.SKILLS, sk),
     ]
 
 
@@ -96,7 +101,8 @@ async def _discover(settings: Settings, metadata: dict[str, str]) -> Any | None:
 
 async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
     metadata = {"agentos.assistant": assistant_id, "agentos.thread": thread_id}
-    workspace.thread(settings, assistant_id, thread_id).mkdir(parents=True, exist_ok=True)
+    workspace.storage(settings, thread_id).mkdir(parents=True, exist_ok=True)
+    workspace.tmp(settings, thread_id).mkdir(parents=True, exist_ok=True)
 
     existing = await _discover(settings, metadata)
     if existing is not None:

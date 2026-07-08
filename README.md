@@ -42,8 +42,9 @@ workspace/                          ← AGENTOS_WORKSPACE
 ├── .deepagent/<assistant_id>/      ← 助手资产（app 管理）
 │   ├── skills/                     → 挂到该助手每个沙箱的 /workspace/skills
 │   └── .mcp.json                   → graph 工厂读取，载入 MCP 工具
-└── <assistant_id>/<thread_id>/     ← 线程持久文件
-                                    → 挂到该线程沙箱的 /workspace（沙箱销毁后仍在）
+└── sandbox/<thread_id>/            ← 会话沙箱文件（只按 thread 分区，不绑 assistant）
+    ├── storage/                    → 挂到该线程沙箱的 /workspace（持久，沙箱销毁后仍在）
+    └── tmp/                        → 挂到该线程沙箱的 /tmp（临时）
 ```
 
 ## 沙箱与隔离
