@@ -8,7 +8,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from agentos import workspace
-from agentos.config import Settings, current_thread_id, safe_segment
+from agentos.config import Settings, current_thread_id
 
 
 def internet_search(
@@ -39,18 +39,16 @@ def internet_search(
     )
 
 
-def relative(path: str) -> str | None:
-    """沙箱路径 → /workspace 内相对路径;越界或穿越返回 None。"""
+def relative(path: str) -> str:
+    """沙箱路径 → /workspace 内相对路径。"""
     parts = [p for p in PurePosixPath(path).parts if p not in ("/", ".")]
-    if parts[: 1] == ["workspace"]:
+    if parts[:1] == ["workspace"]:
         parts = parts[1:]
-    if not parts or ".." in parts:
-        return None
     return "/".join(parts)
 
 
 def build_share(settings: Settings, assistant_id: str):
-    """构造 share_file:文件已在共享磁盘上,只校验存在并返回下载链接。"""
+    """构造 share_file:文件已在共享磁盘上,校验存在并返回下载链接。"""
 
     def share_file(path: str) -> str:
         """Share a file from /workspace so the user can download it.
@@ -63,16 +61,11 @@ def build_share(settings: Settings, assistant_id: str):
             path: Path of the file inside the sandbox (e.g. "/workspace/report.xlsx").
         """
         rel = relative(path)
-        if rel is None:
-            return f"Invalid path: {path!r} (must be inside /workspace)"
-        thread_id = safe_segment(current_thread_id(), "default")
+        thread_id = current_thread_id()
         target = workspace.thread(settings, assistant_id, thread_id) / rel
         if not target.is_file():
             return f"File not found: {path!r}"
         base = settings.public_url.rstrip("/")
-        return (
-            f"Download link for the user: "
-            f"{base}/files/{assistant_id}/{thread_id}/{quote(rel)}"
-        )
+        return f"Download link for the user: {base}/files/{assistant_id}/{thread_id}/{quote(rel)}"
 
     return share_file

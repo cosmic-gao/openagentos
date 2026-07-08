@@ -1,17 +1,12 @@
-"""配置:每助手 AgentConfig(config.configurable)+ 全局 Settings(env)兜底。
-
-assistant schema:``{"configurable": {"model", "prompt", "api_key", "base_url", "assistant_id"}}``;
-model/api_key/base_url 缺项回退 OPENAI_* 环境变量。
-"""
+"""配置:每助手 AgentConfig(来自 config.configurable)+ 全局 Settings(env)兜底。"""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from langgraph.config import get_config
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SYSTEM_PROMPT = """\
@@ -68,11 +63,9 @@ class Settings(BaseSettings):
     sandbox_image: str = "python:3.12"
     sandbox_ttl: int = 1800
     sandbox_timeout: int | None = None
-    # 每沙箱资源上限(docker limits);缺省对齐 OpenSandbox SDK 默认 1 CPU / 2Gi。
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
 
-    # 长期记忆:把 /memories/ 路由到跨线程持久的 store(Aegra 注入 AsyncPostgresStore)。
     memory_enabled: bool = True
 
     opensandbox_domain: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_DOMAIN")
@@ -93,16 +86,8 @@ class AgentConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     assistant_id: str | None = None
-    # human-in-the-loop:工具名 → True 或 {"allowed_decisions": [...], "description": ...}。
-    # 缺省 None 即不中断(保持默认行为);需 checkpointer,由 Aegra 运行时注入。
+    # 命中的工具调用前挂起,等 Command(resume=...) 决策;需 checkpointer(Aegra 注入)。
     interrupt_on: dict[str, Any] | None = None
-
-    @classmethod
-    def parse(cls, configurable: dict[str, Any] | None) -> AgentConfig:
-        try:
-            return cls.model_validate(configurable or {})
-        except ValidationError:
-            return cls()
 
 
 @dataclass(frozen=True)
@@ -127,20 +112,10 @@ def configurable(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def current_thread_id() -> str:
-    """当前运行的 thread id;不在图执行上下文时回退 default。"""
+    """当前 run 的 thread id;不在图执行上下文时回退 default。"""
     try:
         cfg = get_config() or {}
     except Exception:
         return "default"
     conf = cfg.get("configurable") or {}
-    meta = cfg.get("metadata") or {}
-    return conf.get("thread_id") or meta.get("thread_id") or "default"
-
-
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def safe_segment(value: str | None, fallback: str = "") -> str:
-    """消毒单段路径名:非安全字符替换为下划线,剥离首尾点/下划线,空则回退。"""
-    cleaned = _UNSAFE.sub("_", value or "").strip("._")
-    return cleaned or fallback
+    return conf.get("thread_id") or cfg.get("metadata", {}).get("thread_id") or "default"

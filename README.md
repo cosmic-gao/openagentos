@@ -264,22 +264,23 @@ description: 何时用 + 做什么   # ≤1024；写清触发场景与关键词
 langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 
 ```jsonc
-// workspace/.deepagent/<assistant_id>/.mcp.json
+// workspace/.deepagent/<assistant_id>/.mcp.json —— 仅支持远程 server（http 家族）
 {
   "mcpServers": {
-    "fs":      { "transport": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"] },
-    "mspbots": { "transport": "streamable_http", "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ..." } }
+    "mspbots": { "transport": "streamable_http", "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ..." } },
+    "search":  { "transport": "sse", "url": "https://your-host/sse" }
   }
 }
 ```
 
-兼容 Claude/Cursor 风格：可用 `type`（`stdio`/`sse`/`http`）代替 `transport`，或省略（据
-`command`/`url` 自动推断）。
+兼容 Claude/Cursor 风格：可用 `type`（`sse` / `http`）代替 `transport`，或省略（据 `url` 自动推断为
+`streamable_http`）。
 
-> ⚠️ **容器部署下仅远程 transport 可用**：app 镜像（`python:3.12-slim` + venv）不含 `node`/`npx`/`uvx`，
-> 故 `stdio` 类 server（如上面的 `npx …`）在 compose / K8s 里**无法拉起**；请用 `streamable_http` / `sse`
-> 远程 server。本地 `uv run aegra dev` 因宿主自带 node 而可用 stdio。需要容器内 stdio，请在 Dockerfile
-> 装上对应运行时（如 node）。
+> ⚠️ **仅允许 `streamable_http` / `sse`（远程 http 家族）**：`stdio`（本地子进程）、`websocket` 及无法
+> 推断 transport 的条目会被**忽略并告警**——服务端不宜起子进程，且 app 镜像不含 `node`/`uv`；
+> langchain-mcp-adapters 官方亦明确劝退在服务端用 stdio（"Before using stdio in a web server context,
+> evaluate whether there's a more appropriate solution."）。策略集中在 [agentos/mcp.py](agentos/mcp.py) 的
+> `_ALLOWED_TRANSPORTS`——确需放开某类，改这一处即可。
 
 **换模型** — 每助手在 assistant config 设 `model`/`base_url`，或改全局 `OPENAI_*` env。
 若想直接用 Anthropic/Google 而非网关，把 `agentos/model.py` 里的 `ChatOpenAI` 换成

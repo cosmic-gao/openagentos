@@ -1,13 +1,9 @@
 """每线程临时沙箱:按 metadata 发现(connect/resume)或新建,服务端 TTL 到期自动销毁。
 
-生命周期归 OpenSandbox 服务端(创建时带 ``timeout``),进程内只缓存句柄:app 重启或沙箱
-到期后,下一次操作按 metadata 重新发现或重建,同一 subPath 重挂共享磁盘,线程文件无损——
-持久化在卷上,沙箱本身可弃。
-
-句柄按 (assistant, thread) 缓存,缓存槽总数受 ``_MAX_SLOTS`` 约束:超额时 LRU 丢弃最旧的
-空闲(未加锁)槽(只忘记本地句柄、不 kill,服务端 TTL 负责回收)。后端从不抛异常、失败以结果对象
-回传,故按结果判失败;若沙箱确已失联(``is_healthy`` 为假),忘记该句柄并重新发现/重建后
-重试一次。
+持久化在共享卷上,沙箱本身可弃:app 重启或沙箱到期后,下次操作按 metadata 重新发现或重建,
+同一 subPath 重挂,线程文件无损。进程内按 (assistant, thread) 缓存句柄,槽总数受 _MAX_SLOTS
+约束(LRU 丢弃空闲槽,只忘记本地句柄、不 kill,服务端 TTL 回收)。后端从不抛异常、失败以结果
+对象回传;沙箱失联(is_healthy 为假)则忘记句柄、重新发现/重建后重试一次。
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents_opensandbox import AsyncOpenSandboxBackend
 
 from agentos import workspace
-from agentos.config import Settings, current_thread_id, safe_segment
+from agentos.config import Settings, current_thread_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -37,12 +33,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
-_MAX_SLOTS = 256  # 缓存槽总数上限(每槽仅一把锁+可选句柄);超额 LRU 丢弃空闲槽,沙箱由服务端 TTL 回收
+_MAX_SLOTS = 256  # 缓存槽总数上限;超额 LRU 丢弃空闲槽,沙箱由服务端 TTL 回收
 
 
 @dataclass
 class _Slot:
-    """每 (assistant, thread) 一个缓存槽:一把开箱锁 + 惰性句柄。"""
+    """每 (assistant, thread) 一个槽:一把开箱锁 + 惰性句柄。"""
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     backend: AsyncOpenSandboxBackend | None = None
@@ -63,12 +59,11 @@ def _connection(settings: Settings) -> Any:
 
 
 def _resource(settings: Settings) -> dict[str, str]:
-    """每沙箱 docker 资源上限(limits);缺省对齐 OpenSandbox SDK 默认 1 CPU / 2Gi。"""
     return {"cpu": settings.sandbox_cpu, "memory": settings.sandbox_memory}
 
 
 def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
-    # 用 SDK 模型的 alias 名(camelCase):这些字段必填且带 alias,snake_case 虽能运行但过不了类型检查。
+    # SDK 模型字段带 alias(camelCase)且必填,snake_case 过不了类型检查。
     from opensandbox.models.sandboxes import PVC, Host, Volume
 
     if settings.workspace_claim:
@@ -78,12 +73,7 @@ def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
             mountPath=mount,
             subPath=sub,
         )
-    return Volume(
-        name=name,
-        host=Host(path=workspace.host_root(settings)),
-        mountPath=mount,
-        subPath=sub,
-    )
+    return Volume(name=name, host=Host(path=workspace.host_root(settings)), mountPath=mount, subPath=sub)
 
 
 def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
@@ -132,11 +122,7 @@ async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncO
 
 
 def _trim(keep: tuple[str, str]) -> None:
-    """把缓存槽总数压回上限:LRU 丢弃最旧的空闲(未加锁)槽(纯同步,无 await 竞态)。
-
-    连同被 ``_forget`` 置空的空槽一并回收,槽数不随出现过的 (assistant, thread) 无界增长;
-    丢弃只忘记本地句柄,沙箱由服务端 TTL 回收。全部在锁中(active)时本轮不裁,待其空闲再裁。
-    """
+    """槽总数压回上限:LRU 丢弃最旧的空闲(未加锁)槽,连同被 _forget 置空的空槽。"""
     while len(_slots) > _MAX_SLOTS:
         victim = next(
             (key for key, slot in _slots.items() if key != keep and not slot.lock.locked()),
@@ -148,7 +134,7 @@ def _trim(keep: tuple[str, str]) -> None:
 
 
 def _forget(key: tuple[str, str], backend: AsyncOpenSandboxBackend) -> None:
-    """忘记一个失联句柄,仅当槽内仍是同一实例(避免误删并发刚刷新出的新句柄)。"""
+    """忘记失联句柄,仅当槽内仍是同一实例(避免误删并发刚刷新的新句柄)。"""
     slot = _slots.get(key)
     if slot is not None and slot.backend is backend:
         slot.backend = None
@@ -172,7 +158,6 @@ async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> Asy
 
 
 async def _healthy(backend: AsyncOpenSandboxBackend) -> bool:
-    """沙箱是否仍可达(``is_healthy`` 已吞异常返回 False,这里再兜一层)。"""
     try:
         return await backend.sandbox.is_healthy()
     except Exception:
@@ -191,18 +176,18 @@ def _failed(result: Any) -> bool:
 
 
 class SessionSandbox(BaseSandbox):
-    """按 (assistant, thread) 多路复用的沙箱后端;沙箱失联时重新发现并重试一次。"""
+    """按 (assistant, thread) 多路复用的沙箱后端;失联时重新发现并重试一次。"""
 
     def __init__(self, settings: Settings, assistant_id: str) -> None:
         self._settings = settings
-        self._assistant_id = safe_segment(assistant_id, "default")
+        self._assistant = assistant_id
 
     @property
     def id(self) -> str:
-        return f"agentos-{self._assistant_id}"
+        return f"agentos-{self._assistant}"
 
     async def _call(self, op: Callable[[AsyncOpenSandboxBackend], Awaitable[Any]]) -> Any:
-        key = (self._assistant_id, safe_segment(current_thread_id(), "default"))
+        key = (self._assistant, current_thread_id())
         backend = await _acquire(self._settings, *key)
         result = await op(backend)
         if _failed(result) and not await _healthy(backend):
@@ -234,7 +219,7 @@ class SessionSandbox(BaseSandbox):
 
 
 def session(settings: Settings, assistant_id: str) -> SessionSandbox | None:
-    """沙箱后端;``AGENTOS_SANDBOX_ENABLED=false`` 时返回 None(开发态)。"""
+    """沙箱后端;AGENTOS_SANDBOX_ENABLED=false 时返回 None(开发态)。"""
     if not settings.sandbox_enabled:
         return None
     return SessionSandbox(settings, assistant_id)
