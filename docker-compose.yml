@@ -118,12 +118,12 @@ services:
         target: /workspace-data
         bind:
           create_host_path: false
-    # 未挂载保护：哨兵文件（AGENTOS_WORKSPACE_SENTINEL）不在则拒启，防外挂盘没挂好时写入系统盘；留空跳过。
+    # 未挂载保护：哨兵（AGENTOS_WORKSPACE_SENTINEL,文件或目录）不在则拒启，防外挂盘没挂好时写入系统盘；留空跳过。
     command:
       - /bin/sh
       - -c
       - |
-        if [ -n "$$AGENTOS_WORKSPACE_SENTINEL" ] && [ ! -f "$$AGENTOS_WORKSPACE/$$AGENTOS_WORKSPACE_SENTINEL" ]; then
+        if [ -n "$$AGENTOS_WORKSPACE_SENTINEL" ] && [ ! -e "$$AGENTOS_WORKSPACE/$$AGENTOS_WORKSPACE_SENTINEL" ]; then
           echo "[fatal] 工作区哨兵 '$$AGENTOS_WORKSPACE_SENTINEL' 不在 $$AGENTOS_WORKSPACE 下——外挂盘未挂载？" >&2
           exit 1
         fi
