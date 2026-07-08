@@ -1,4 +1,13 @@
-"""Aegra 自定义 HTTP 路由:线程文件下载 + .deepagent/<aid>/ 资产管理(skills、.mcp.json)。"""
+"""Aegra 自定义 HTTP 路由:沙箱产物下载 + .deepagent/<aid>/ 资产管理。
+
+必须直接用 `@app` 装饰器挂路由(勿 include_router / mount 子应用):Aegra 的
+`enable_custom_route_auth` 只对根 app 上的 APIRoute 注入鉴权。异常处理器只注册
+assets/workspace 会抛的窄类型(ValueError/OSError),勿注册 Exception/HTTPException——
+那会顶掉 Aegra 核心路由的 Agent Protocol 错误处理器。
+
+归属鉴权:本路由默认信任上游可信网关按 assistant_id/thread_id 分派(见 auth.py),
+不复核资源归属;要在本服务内强制,按 user 校验或加 @auth.on 处理器。
+"""
 
 from __future__ import annotations
 
@@ -11,11 +20,9 @@ from pydantic import BaseModel
 from agentos import assets, workspace
 from agentos.config import get_settings, safe_segment
 
-# 必须直接挂 @app,勿 include_router:Aegra 的自定义路由鉴权只扫 app.routes 里的真 APIRoute。
 app = FastAPI(title="OpenAgentOS files")
 
 
-# 领域异常 → HTTP 码;UnicodeDecodeError 是 ValueError 子类,须排在前。
 _STATUS: dict[type[Exception], int] = {
     UnicodeDecodeError: 415,
     FileNotFoundError: 404,
@@ -26,10 +33,10 @@ _STATUS: dict[type[Exception], int] = {
 }
 
 
-# 只认窄类型(assets/workspace 抛的),免去每个处理器重复 try/except;勿注册 Exception,会顶掉 Aegra 核心路由的处理器。
 @app.exception_handler(ValueError)
 @app.exception_handler(OSError)
 async def _on_error(_request, exc: Exception) -> JSONResponse:
+    """领域异常 → HTTP 码。UnicodeDecodeError 是 ValueError 子类,须在 _STATUS 中排其前才命中 415。"""
     status = next((s for k, s in _STATUS.items() if isinstance(exc, k)), 500)
     return JSONResponse({"detail": str(exc) or type(exc).__name__}, status_code=status)
 
@@ -63,9 +70,9 @@ class MoveBody(BaseModel):
     dest: str
 
 
-# 沙箱产物只按 thread 分区,不暴露 assistant_id;取自 sandbox/<tid>/storage/。
 @app.get("/files/{thread_id}/{rel:path}")
 def download(thread_id: str, rel: str) -> FileResponse:
+    """下载会话沙箱产物;只按 thread 分区、不暴露 assistant_id,取自 sandbox/<tid>/storage/。"""
     target = workspace.contained(workspace.storage(get_settings(), thread_id), rel)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
@@ -107,7 +114,6 @@ def move_file(assistant_id: str, body: MoveBody) -> dict[str, str]:
     return {"path": assets.move(_dir(assistant_id), body.src, body.dest)}
 
 
-# 上传多文件(各带相对路径即重建目录树);extract=true 时按 zip 解压进 dest。
 @app.post("/assistants/{assistant_id}/upload", status_code=201, tags=["Assistants"])
 async def upload_files(
     assistant_id: str,
@@ -115,6 +121,7 @@ async def upload_files(
     dest: str = Form(""),
     extract: bool = Form(False),
 ) -> dict[str, list[str]]:
+    """上传多文件(各带相对路径即重建目录树);extract=true 时按 zip 解压进 dest。"""
     blobs = [(f.filename or "", await f.read()) for f in files]
     return {"written": _put(_dir(assistant_id), blobs, dest, extract)}
 
@@ -126,10 +133,9 @@ def delete_file(assistant_id: str, rel: str) -> dict[str, str]:
     return {"path": rel}
 
 
-# ---- 跨多个 assistant 的批量分发;单个 assistant 失败只记录、不中断其余 ----
 class BatchDelete(BaseModel):
     assistant_ids: list[str]
-    path: str  # 要删的文件或目录(目录递归删)
+    path: str
 
 
 @app.post("/files/upload", tags=["Assistants"])
@@ -139,7 +145,8 @@ async def batch_upload(
     dest: str = Form(""),
     extract: bool = Form(False),
 ) -> dict:
-    blobs = [(f.filename or "", await f.read()) for f in files]  # 只读一次,复用到每个 assistant
+    """把同一批文件分发到多个 assistant;单个失败只记录、不中断其余。"""
+    blobs = [(f.filename or "", await f.read()) for f in files]
     results: dict[str, dict] = {}
     for aid in assistant_ids:
         try:
@@ -151,6 +158,7 @@ async def batch_upload(
 
 @app.post("/files/delete", tags=["Assistants"])
 def batch_delete(body: BatchDelete) -> dict:
+    """从多个 assistant 删同一路径(目录递归);单个失败只记录、不中断其余。"""
     results: dict[str, dict] = {}
     for aid in body.assistant_ids:
         try:

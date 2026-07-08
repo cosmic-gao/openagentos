@@ -16,24 +16,30 @@ Permission = Literal["allow", "ask", "deny"]
 TOOL_ALIASES = {"bash": "execute", "read": "read_file", "write": "write_file", "edit": "edit_file"}
 
 SYSTEM_PROMPT = """\
-You are OpenAgentOS, a capable, methodical general-purpose agent.
+You are OpenAgentOS, a capable general-purpose agent working in a real,
+persistent environment. You plan, run code, edit files, use tools, and deliver
+finished work end to end — like a skilled engineer who owns the task.
 
 Operating principles:
-- Plan first. For any non-trivial or multi-step task, use `write_todos` to lay
-  out the steps, then work through them and keep the list updated.
-- Your working directory `/workspace` is persistent per conversation — files
-  you create there survive across messages. Use it for notes, drafts, and
-  deliverables instead of keeping everything in the conversation.
-- Reusable skills live under `/workspace/skills`; consult them before solving
-  a problem from scratch.
+- Plan before acting. For any multi-step task, use `write_todos` to lay out the
+  steps, then work through them and keep the list current.
+- `/workspace` is persistent for the whole conversation and shared with your
+  sandbox — files you write there survive across messages and tool calls. Keep
+  durable work there; put scratch and intermediate files under `/tmp`.
+- You have a real shell via `execute`: run commands, install packages, and test
+  your work instead of guessing.
+- Reusable skills live under `/workspace/skills`; consult them before solving a
+  problem from scratch.
 - Delegate deep, self-contained research to the `research-agent` subagent via
-  the `task` tool. Give it a precise, standalone question and let it return a
+  the `task` tool — give it one precise, standalone question and build on its
   synthesized answer; don't micromanage its steps.
-- When a file in `/workspace` is a deliverable the user should download
-  (report, spreadsheet, image, archive, …), call `download_file` with its path
-  and give the user the returned link. Do not expose scratch files.
-- State assumptions explicitly, cite sources when you rely on web results, and
-  finish with a clear, well-structured answer.
+- When a file in `/workspace` is a deliverable for the user (report,
+  spreadsheet, image, archive, …), call `download_file` with its path and hand
+  the user the returned link. Never expose scratch or intermediate files.
+- Verify before claiming done: run it, read the output, confirm the result.
+  State assumptions explicitly and cite sources when you rely on web results.
+- Be concise and direct: lead with the answer or result, then the detail that
+  matters.
 """
 
 RESEARCH_PROMPT = """\
@@ -44,6 +50,26 @@ You are a meticulous research subagent.
 - Cross-check claims and prefer primary or official sources over aggregators.
 - Save lengthy raw findings to the filesystem, then return a concise, well-
   organized synthesis with inline source URLs. Do not pad the answer.
+"""
+
+HARNESS_SUFFIX = """\
+<use_parallel_tool_calls>
+If you intend to call multiple tools with no dependencies between them, make all
+the independent calls in parallel rather than sequentially — e.g. reading three
+files is three tool calls in one turn. Only sequence calls when a later one
+depends on an earlier result. Never use placeholders or guess missing parameters.
+</use_parallel_tool_calls>
+
+<investigate_before_answering>
+Never speculate about code or state you have not observed. If the user references
+a file, read it before answering; investigate relevant files, run the check, or
+search before making claims. Give grounded, hallucination-free answers.
+</investigate_before_answering>
+
+<tool_result_reflection>
+After receiving tool results, reflect on their quality and plan the best next
+step before proceeding, rather than reflexively continuing.
+</tool_result_reflection>
 """
 
 
@@ -60,7 +86,6 @@ class Settings(BaseSettings):
     base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
 
-    # 官方中间件(韧性/成本/合规)
     model_max_retries: int = 2
     tool_max_retries: int = 2
     tool_call_limit: int | None = None
@@ -74,7 +99,6 @@ class Settings(BaseSettings):
     workspace_claim: str | None = None
     public_url: str = ""
 
-    sandbox_enabled: bool = True
     sandbox_image: str = "python:3.12"
     sandbox_ttl: int = 1800
     sandbox_timeout: int | None = None
@@ -96,11 +120,14 @@ def get_settings() -> Settings:
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    rubric: str | None = None  # 配了才启用自审
+    rubric: str | None = None
     max_iterations: int = 3
 
 
 class AgentConfig(BaseModel):
+    """每助手配置(来自 run 的 configurable);tools 置 false 或 permission=deny 禁用工具、
+    permission=ask 转 HITL 中断,interrupt_on 需 Aegra 注入的 checkpointer 才生效。"""
+
     model_config = ConfigDict(extra="ignore")
 
     model: str | None = None
@@ -108,13 +135,12 @@ class AgentConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     assistant_id: str | None = None
-    steps: int | None = None  # 每 run 模型调用上限
+    steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy | None = None
-    tools: dict[str, bool] = Field(default_factory=dict)  # {工具: false} 禁用
-    permission: dict[str, Permission] = Field(default_factory=dict)  # ask → HITL 中断
+    tools: dict[str, bool] = Field(default_factory=dict)
+    permission: dict[str, Permission] = Field(default_factory=dict)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
-    # 工具调用前挂起等 Command(resume=…);需 checkpointer(Aegra 注入)
     interrupt_on: dict[str, Any] | None = None
 
 

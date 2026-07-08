@@ -13,7 +13,6 @@ DEEPAGENT = ".deepagent"
 SANDBOX = "sandbox"
 MCP_FILE = ".mcp.json"
 
-# 虚拟路径(非磁盘):/memories/ 经 CompositeBackend 路由到持久 store,跨线程
 MEMORIES = "/memories"
 MEMORY_FILE = "/memories/AGENTS.md"
 

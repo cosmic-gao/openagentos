@@ -15,15 +15,9 @@ def _servers(settings, assistant_id: str) -> dict:
     return mcp.parse(file.read_text(encoding="utf-8") if file.is_file() else None)
 
 
-def _backend(settings, assistant_id: str) -> tuple[Any, list[str] | None]:
-    """沙箱可用则每线程沙箱(带 skills),否则 StateBackend(无 skills)。"""
-    box = sandbox.session(settings, assistant_id)
-    if box is not None:
-        return box, [workspace.SKILLS]
-
-    from deepagents.backends import StateBackend
-
-    return StateBackend(), None
+def _backend(settings, assistant_id: str) -> tuple[Any, list[str]]:
+    """每线程沙箱后端 + skills 目录。"""
+    return sandbox.session(settings, assistant_id), [workspace.SKILLS]
 
 
 def _memory(settings, assistant_id: str, base: Any) -> tuple[Any, list[str] | None]:
@@ -45,8 +39,7 @@ async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
     parsed = AgentConfig.model_validate(conf)
     resolved = resolve(parsed, settings)
 
-    # 仅真正执行时载 MCP、写盘;introspection(schema/画图)走轻量路径,不影响图拓扑
-    executing = runtime is None or runtime.execution_runtime is not None
+    executing = runtime is not None and runtime.execution_runtime is not None
 
     agent_tools = [tools.internet_search, tools.build_download(settings)]
     if executing:

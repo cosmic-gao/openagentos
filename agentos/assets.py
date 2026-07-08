@@ -13,9 +13,11 @@ from agentos import workspace
 
 @dataclass(frozen=True)
 class Entry:
-    path: str  # 相对 assistant 根的 posix 路径
+    """目录项:path 为相对 assistant 根的 posix 路径;目录的 size 记 0。"""
+
+    path: str
     is_dir: bool
-    size: int  # 文件字节数;目录为 0
+    size: int
 
 
 def _resolve(base: Path, rel: str) -> Path:
@@ -36,12 +38,11 @@ def ls(base: Path, rel: str = "") -> list[Entry]:
     ]
 
 
-# 递归遍历子树,返回全部 Entry(目录+文件),供前端一次性构建文件树。
-# 剪掉 .git 等 VCS 目录,避免把成千上万条对象文件拉回来。
 _SKIP_DIRS = {".git"}
 
 
 def walk(base: Path, rel: str = "") -> list[Entry]:
+    """递归遍历子树返回全部 Entry(供前端一次性建树);跳过 .git 等 VCS 目录。"""
     root = _resolve(base, rel)
     if not root.exists():
         return []
@@ -79,7 +80,7 @@ def save(base: Path, rel: str, data: bytes) -> str:
 
 
 def unpack(base: Path, rel: str, data: bytes) -> list[str]:
-    """把 zip 解压进 rel 目录;每个成员过 contained 防 zip-slip。返回写入文件的相对路径。"""
+    """把 zip 解压进 rel 目录(成员过 contained 防 zip-slip,兼容反斜杠路径)。返回写入的相对路径。"""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
@@ -89,7 +90,7 @@ def unpack(base: Path, rel: str, data: bytes) -> list[str]:
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            member = info.filename.replace("\\", "/")  # 有些 Windows zip 用反斜杠
+            member = info.filename.replace("\\", "/")
             target = _resolve(base, f"{rel}/{member}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zf.read(info))

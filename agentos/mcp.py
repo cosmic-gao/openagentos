@@ -1,4 +1,4 @@
-"""MCP 工具载入(langchain-mcp-adapters):parse 解析 .mcp.json,tools 按内容缓存载入。"""
+"""MCP 工具载入(langchain-mcp-adapters):解析 .mcp.json,按内容缓存载入;仅允许远程 http/sse。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 _cache: dict[str, list] = {}
 
-# Claude/Cursor 的 `type` → langchain-mcp-adapters 的 `transport`
 _TYPE_TO_TRANSPORT = {
     "stdio": "stdio",
     "sse": "sse",
@@ -18,12 +17,11 @@ _TYPE_TO_TRANSPORT = {
     "websocket": "websocket",
 }
 
-# 仅远程 http 家族:stdio 会在 app 容器内起子进程(镜像无 node/uv),不符服务端场景;其余跳过并告警
 _ALLOWED_TRANSPORTS = frozenset({"streamable_http", "sse"})
 
 
 def _transport(spec: dict, conn: dict) -> str | None:
-    """推断 transport:显式 > type > command/url;无从判断返回 None。"""
+    """推断 transport:显式 transport > Claude/Cursor 的 type > command/url;无从判断返回 None。"""
     if conn.get("transport"):
         return conn["transport"]
     claude_type = spec.get("type")
@@ -37,7 +35,7 @@ def _transport(spec: dict, conn: dict) -> str | None:
 
 
 def _normalize(servers: dict) -> dict:
-    """规整并过滤 mcpServers:非 http/sse 跳过并告警。"""
+    """规整 mcpServers 并过滤:非 http/sse(如 stdio,服务端镜像无 node/uv 起子进程)跳过并告警。"""
     normalized: dict = {}
     rejected: list[str] = []
     for name, spec in servers.items():
@@ -60,7 +58,7 @@ def _normalize(servers: dict) -> dict:
 
 
 def parse(text: str | None) -> dict:
-    """解析 .mcp.json 文本为规整后的 mcpServers 配置（容错）。"""
+    """解析 .mcp.json 文本为规整后的 mcpServers 配置(容错,失败返回空)。"""
     if not text:
         return {}
     try:
@@ -72,7 +70,7 @@ def parse(text: str | None) -> dict:
 
 
 async def tools(servers: dict) -> list:
-    """把 mcpServers 配置载入为 tools（无配置返回 []；按内容缓存）。"""
+    """把 mcpServers 配置载入为 tools(无配置返回 [];按规整后内容缓存,同配置只连一次)。"""
     if not servers:
         return []
     normalized = _normalize(servers)

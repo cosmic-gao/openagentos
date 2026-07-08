@@ -1,14 +1,20 @@
-"""组装 agent:model + tools + subagents → create_deep_agent。"""
+"""组装 agent:model + tools + subagents → create_deep_agent。
+
+经 OpenAI 兼容网关的模型自省出 `openai:<name>`,匹配不到 deepagents 内置 harness profile,
+故在此注册一份 provider 级 `openai` profile,补回并行工具调用、先查证再答等模型级调优。
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from deepagents import SubAgent, create_deep_agent
+from deepagents import HarnessProfile, SubAgent, create_deep_agent, register_harness_profile
 
 from agentos import middleware, model
-from agentos.config import RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
+from agentos.config import HARNESS_SUFFIX, RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
 from agentos.tools import internet_search
+
+register_harness_profile("openai", HarnessProfile(system_prompt_suffix=HARNESS_SUFFIX))
 
 
 def _research(llm: Any) -> SubAgent:

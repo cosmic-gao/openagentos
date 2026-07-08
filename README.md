@@ -2,13 +2,11 @@
 
 自托管的 **AI agent OS**：[DeepAgents](https://github.com/langchain-ai/deepagents)
 （agent harness）跑在 [Aegra](https://github.com/aegra/aegra)（自托管 Agent Protocol
-服务器）之上。你的基础设施、你的数据、零厂商锁定。
+服务器）之上。
 
 - **DeepAgents** 负责造 agent —— 规划（`write_todos`）、虚拟文件系统、子代理、skills、
   human-in-the-loop，全部构建在 LangGraph 之上。
 - **Aegra** 负责托管 —— Agent Protocol API、PostgreSQL 持久化、流式、cron、可插拔鉴权。
-  它是 LangGraph Platform / LangSmith Deployments 的直接替代品，兼容标准 LangGraph SDK、
-  Agent Chat UI、LangGraph Studio、AG-UI / CopilotKit。
 
 `create_deep_agent(...)` 返回一个已编译的 LangGraph 图；Aegra 托管该图并在运行时注入
 持久化。这就是核心思路。
@@ -16,7 +14,7 @@
 ## 架构
 
 ```
-客户端 (LangGraph SDK / Agent Chat UI / CopilotKit)
+客户端 (LangGraph SDK)
    │  Agent Protocol (HTTP + SSE)
    ▼
 Aegra 服务器 (FastAPI, :2026)
@@ -30,7 +28,7 @@ Aegra 服务器 (FastAPI, :2026)
    │                  │                     │
    ▼                  ▼                     ▼
 PostgreSQL        OpenAI 兼容网关          OpenSandbox 容器服务
-(检查点 / store)   (Azure / LiteLLM / …)    (每线程临时沙箱 + 共享磁盘卷)
+(检查点 / store)   (URL + key)              (每线程临时沙箱 + 共享磁盘卷)
 ```
 
 ## 共享磁盘布局
@@ -78,34 +76,14 @@ uvx opensandbox-server          # 默认 localhost:8080
 ```
 
 相关环境变量见 [.env.example](.env.example)（`OPEN_SANDBOX_DOMAIN`、`AGENTOS_SANDBOX_*`）。
-不需要执行能力时设 `AGENTOS_SANDBOX_ENABLED=false`：回退 `StateBackend`（无需服务器，也无
-`execute` 工具）。
-
-## 版本锁定
-
-| 组件 | 版本 |
-| -------------------- | --------- |
-| aegra-cli / aegra-api| 0.9.24    |
-| deepagents           | 0.6.12    |
-| langchain / -core    | 1.3.11 / 1.4.8 |
-| langgraph            | 1.2.8     |
-| langchain-openai     | 1.3.3     |
-| langchain-mcp-adapters | 0.3.0   |
-| deepagents-opensandbox | git @ cosmic-gao/opensandbox |
-| opensandbox          | >= 0.1.13 |
-| Python               | 3.12（由 `.python-version` 锁定） |
-
-> 仓库锁定 Python 3.12 以获得最广的原生 wheel 覆盖。即使系统 Python 更新，`uv` 也会
-> 自动获取 3.12。
 
 ## 前置依赖
 
 - [`uv`](https://docs.astral.sh/uv/)（依赖与 Python 版本管理）
 - **Docker**（Aegra 会自动拉起 PostgreSQL）。运行服务器前先启动 Docker Desktop。
-- 一个 **OpenAI 兼容的 LLM 网关**（URL + key）—— 如 MSPbots 网关、Azure OpenAI、
-  LiteLLM、vLLM 或 Ollama。
-- 若需要沙箱内 `execute`：一个 **OpenSandbox 服务器**（`uvx opensandbox-server`，基于
-  Docker）—— 见上文「沙箱与隔离」。可选；设 `AGENTOS_SANDBOX_ENABLED=false` 可跳过。
+- 一个 **OpenAI 兼容的 LLM 网关**（URL + key）。
+- 一个 **OpenSandbox 服务器**（`uvx opensandbox-server`，基于 Docker）提供沙箱内 `execute`
+  —— 见上文「沙箱与隔离」。
 
 ## 快速开始
 
@@ -143,7 +121,7 @@ openagentos/
 ├── agentos/                # agent 本体（Python 包）
 │   ├── __init__.py         # 加载 .env + 公共 API 导出
 │   ├── config.py           # Settings(env) + AgentConfig(configurable) + resolve + 系统提示
-│   ├── workspace.py        # 共享磁盘布局（.deepagent/<aid>/ 与 <aid>/<tid>/）
+│   ├── workspace.py        # 共享磁盘布局（.deepagent/<aid>/ 与 sandbox/<tid>/）
 │   ├── model.py            # OpenAI 兼容网关 chat model 工厂（model.build）
 │   ├── mcp.py              # 从 .mcp.json 载入 MCP 工具（parse / tools）
 │   ├── tools.py            # internet_search（Tavily）+ download_file（共享磁盘直链）
@@ -161,7 +139,7 @@ openagentos/
 
 ### `aegra.json`
 
-与 `langgraph.json` 同构，这里保持最简：
+保持最简：
 
 ```json
 {
@@ -235,7 +213,6 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
 | `AGENTOS_PUBLIC_URL` | 下载链接前缀（`download_file` / `/files` 路由） |
 | `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
-| `AGENTOS_SANDBOX_ENABLED` | 是否启用沙箱（默认 `true`；`false` 回退 StateBackend） |
 | `OPEN_SANDBOX_DOMAIN` / `OPEN_SANDBOX_API_KEY` | OpenSandbox 服务器地址 / 鉴权 |
 | `AGENTOS_SANDBOX_IMAGE` | 沙箱镜像（默认 `python:3.12`） |
 | `AGENTOS_SANDBOX_TTL` | 沙箱寿命秒数（默认 `1800`，到期服务端销毁） |
@@ -293,14 +270,12 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 }
 ```
 
-兼容 Claude/Cursor 风格：可用 `type`（`sse` / `http`）代替 `transport`，或省略（据 `url` 自动推断为
+也可用 `type`（`sse` / `http`）代替 `transport`，或省略（据 `url` 自动推断为
 `streamable_http`）。
 
 > ⚠️ **仅允许 `streamable_http` / `sse`（远程 http 家族）**：`stdio`（本地子进程）、`websocket` 及无法
-> 推断 transport 的条目会被**忽略并告警**——服务端不宜起子进程，且 app 镜像不含 `node`/`uv`；
-> langchain-mcp-adapters 官方亦明确劝退在服务端用 stdio（"Before using stdio in a web server context,
-> evaluate whether there's a more appropriate solution."）。策略集中在 [agentos/mcp.py](agentos/mcp.py) 的
-> `_ALLOWED_TRANSPORTS`——确需放开某类，改这一处即可。
+> 推断 transport 的条目会被**忽略并告警**——服务端不宜起子进程，且 app 镜像不含 `node`/`uv`。
+> 策略集中在 [agentos/mcp.py](agentos/mcp.py) 的 `_ALLOWED_TRANSPORTS`——确需放开某类，改这一处即可。
 
 **换模型** — 每助手在 assistant config 设 `model`/`base_url`，或改全局 `OPENAI_*` env。
 若想直接用 Anthropic/Google 而非网关，把 `agentos/model.py` 里的 `ChatOpenAI` 换成
@@ -317,15 +292,19 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
   想要向量语义检索，再在 `aegra.json` 加 `store.index` 块（见配置参考）。
 - **鉴权**由 `aegra.json` 的 `auth` 块启用，指向 [agentos/auth.py](agentos/auth.py)：从请求头
   `x-tenant-id` / `x-user-id` 解析身份（`identity = <tenant>:<user>`）。**缺头不拒绝**——回退
-  `default` / `anonymous`，故当前 auth 只做**身份标注（审计）**、不做强制。此版 Aegra 里 `AUTH_TYPE`
-  不控制它（`noop`/`custom` 等价），真正的开关是这里的 `auth` 块；要"缺头即 401"，把 auth.py 的回退
+  `default` / `anonymous`，故当前 auth 只做**身份标注（审计）**、不做强制。要"缺头即 401"，把 auth.py 的回退
   改成抛 `Auth.exceptions.HTTPException(status_code=401)`。改用 JWT/OAuth/Firebase 见
   <https://docs.aegra.dev/guides/authentication>。
   > ⚠️ **数据隔离的键是 `assistant_id` + `thread_id`，与这两个头无关**：磁盘布局、记忆 namespace、
   > 沙箱 metadata 只用这两个 id；`x-tenant-id` / `x-user-id` 仅填充身份、不参与分区。本项目把
   > 「租户↔assistant、用户↔thread」的归属放在**上游业务层**：`thread_id` 由 Aegra 服务端强制、
   > 客户端改不动；但 `assistant_id` 不被钉死（run 请求体可覆盖），故上游须**权威写入 `assistant_id`
-  > 并防止客户端覆盖**。要在 Aegra 内做归属鉴权，加 `@auth.on` 处理器或在 `routes.py` 里按 `user` 校验。
+  > 并防止客户端覆盖**。
+  >
+  > ⚠️ **同理，`routes.py` 的自定义资产/文件路由只认证、不复核归属**：任何已认证调用者拿到
+  > `assistant_id`（`/assistants/{id}/files…`）或 `thread_id`（`/files/{thread_id}/…`）即可读写对应文件；
+  > 默认 `system` assistant 更是人人可见。这是**刻意设计**——归属由上游可信网关保证。要在本服务内强制，
+  > 加 `@auth.on` 处理器或在 `routes.py` 里按 `user` 校验资源归属。
 
 ## 部署
 

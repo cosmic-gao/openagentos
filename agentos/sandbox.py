@@ -1,14 +1,20 @@
-"""每线程临时沙箱:按 metadata 发现(connect/resume)或新建,服务端 TTL 到期自动销毁。"""
+"""每线程临时沙箱:按 metadata 发现(connect/resume)或新建,服务端 TTL 到期自动销毁。
+
+进程级共享一个 httpx transport(全沙箱共用连接池)与一个长驻 SandboxManager(发现复用);
+按 (assistant, thread) 多路复用后端句柄,失联时重新发现并重试一次。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -27,21 +33,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
-_MAX_SLOTS = 256  # 缓存槽上限;超额 LRU 丢空闲槽,沙箱由服务端 TTL 回收
+_MAX_SLOTS = 256
+
+_TRANSPORT = httpx.AsyncHTTPTransport(
+    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0)
+)
+_manager: Any = None
 
 
 @dataclass
 class _Slot:
-    """每 (assistant, thread) 一个槽:一把开箱锁 + 惰性句柄。"""
+    """每 (assistant, thread) 一个槽:开箱锁 + 惰性句柄 + 上次续期的单调时刻。"""
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     backend: AsyncOpenSandboxBackend | None = None
+    renewed: float = 0.0
 
 
 _slots: OrderedDict[tuple[str, str], _Slot] = OrderedDict()
 
 
 def _connection(settings: Settings) -> Any:
+    """连接配置;显式传共享 transport,SDK 视为用户所有故不会关闭它。"""
     from opensandbox.config import ConnectionConfig
 
     return ConnectionConfig(
@@ -49,7 +62,17 @@ def _connection(settings: Settings) -> Any:
         api_key=settings.opensandbox_api_key,
         protocol=settings.protocol,
         use_server_proxy=settings.server_proxy,
+        transport=_TRANSPORT,
     )
+
+
+async def _get_manager(settings: Settings) -> Any:
+    global _manager
+    if _manager is None:
+        from opensandbox.manager import SandboxManager
+
+        _manager = await SandboxManager.create(connection_config=_connection(settings))
+    return _manager
 
 
 def _resource(settings: Settings) -> dict[str, str]:
@@ -57,7 +80,6 @@ def _resource(settings: Settings) -> dict[str, str]:
 
 
 def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
-    # SDK 字段是 camelCase alias 且必填,snake_case 过不了类型检查
     from opensandbox.models.sandboxes import PVC, Host, Volume
 
     if settings.workspace_claim:
@@ -71,7 +93,6 @@ def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
 
 
 def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
-    # workspace→持久区、/tmp→临时区(只按 thread 分区);skills 仍按 assistant 挂载(跨线程复用)
     ws = workspace.under(settings, workspace.storage(settings, thread_id))
     tmp = workspace.under(settings, workspace.tmp(settings, thread_id))
     sk = workspace.under(settings, workspace.skills(settings, assistant_id))
@@ -83,19 +104,24 @@ def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]
 
 
 async def _discover(settings: Settings, metadata: dict[str, str]) -> Any | None:
-    """按 metadata 找已有沙箱:PAUSED 恢复,RUNNING 连接,否则 None。"""
-    from opensandbox.manager import SandboxManager
+    """按 metadata 找 RUNNING/PAUSED 沙箱:PAUSED 恢复、RUNNING 连接,否则 None。"""
     from opensandbox.models.sandboxes import SandboxFilter, SandboxState
     from opensandbox.sandbox import Sandbox
 
+    manager = await _get_manager(settings)
+    listing = await manager.list_sandbox_infos(
+        SandboxFilter(
+            metadata=metadata,
+            states=[SandboxState.RUNNING, SandboxState.PAUSED],
+            page_size=10,
+        )
+    )
     connection = _connection(settings)
-    async with await SandboxManager.create(connection_config=connection) as manager:
-        listing = await manager.list_sandbox_infos(SandboxFilter(metadata=metadata, page_size=10))
-        for info in listing.sandbox_infos:
-            if info.status.state == SandboxState.PAUSED:
-                return await Sandbox.resume(sandbox_id=info.id, connection_config=connection)
-            if info.status.state == SandboxState.RUNNING:
-                return await Sandbox.connect(sandbox_id=info.id, connection_config=connection)
+    for info in listing.sandbox_infos:
+        if info.status.state == SandboxState.PAUSED:
+            return await Sandbox.resume(sandbox_id=info.id, connection_config=connection)
+        if info.status.state == SandboxState.RUNNING:
+            return await Sandbox.connect(sandbox_id=info.id, connection_config=connection)
     return None
 
 
@@ -122,7 +148,7 @@ async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncO
 
 
 def _trim(keep: tuple[str, str]) -> None:
-    """压回上限:LRU 丢弃最旧的空闲槽(未加锁)。"""
+    """压回上限:LRU 丢弃最旧的空闲槽(未加锁);thread_id 随会话增长,必须限界。"""
     while len(_slots) > _MAX_SLOTS:
         victim = next(
             (key for key, slot in _slots.items() if key != keep and not slot.lock.locked()),
@@ -140,8 +166,21 @@ def _forget(key: tuple[str, str], backend: AsyncOpenSandboxBackend) -> None:
         slot.backend = None
 
 
+async def _renew(settings: Settings, slot: _Slot) -> None:
+    """按半个 TTL 节流续期,防长会话被服务端中途回收;失败留给失联重建兜底。"""
+    ttl = settings.sandbox_ttl
+    backend = slot.backend
+    if not ttl or backend is None or time.monotonic() - slot.renewed < ttl / 2:
+        return
+    slot.renewed = time.monotonic()
+    try:
+        await backend.sandbox.renew(timedelta(seconds=ttl))
+    except Exception as exc:
+        logger.debug("sandbox renew failed: %s", exc)
+
+
 async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
-    """取或建句柄;同 key 并发只开箱一次(双检锁),建成后压回上限。"""
+    """取或建句柄;同 key 并发只开箱一次(双检锁),建成后压回上限并按需续期。"""
     key = (assistant_id, thread_id)
     slot = _slots.get(key)
     if slot is None:
@@ -153,7 +192,9 @@ async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> Asy
         async with slot.lock:
             if slot.backend is None:
                 slot.backend = await _open(settings, *key)
+                slot.renewed = time.monotonic()
                 _trim(keep=key)
+    await _renew(settings, slot)
     return slot.backend
 
 
@@ -218,8 +259,6 @@ class SessionSandbox(BaseSandbox):
         raise NotImplementedError(_ASYNC_ONLY)
 
 
-def session(settings: Settings, assistant_id: str) -> SessionSandbox | None:
-    """沙箱后端;AGENTOS_SANDBOX_ENABLED=false 时返回 None(开发态)。"""
-    if not settings.sandbox_enabled:
-        return None
+def session(settings: Settings, assistant_id: str) -> SessionSandbox:
+    """按 (assistant, thread) 多路复用的每线程沙箱后端。"""
     return SessionSandbox(settings, assistant_id)
