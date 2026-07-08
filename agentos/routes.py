@@ -1,8 +1,4 @@
-"""Aegra 自定义 HTTP 路由:线程文件下载 + .deepagent/<aid>/ 资产管理(skills、.mcp.json)。
-
-资产端点挂在 /assistants/{aid}/ 下、共用 Assistants 分组;files/move 与 Aegra 自带的
-assistant 子资源(latest/versions/schemas/graph/subgraphs)不重名。归属鉴权由上游业务方处理。
-"""
+"""Aegra 自定义 HTTP 路由:线程文件下载 + .deepagent/<aid>/ 资产管理(skills、.mcp.json)。"""
 
 from __future__ import annotations
 
@@ -38,7 +34,7 @@ class MoveBody(BaseModel):
     dest: str
 
 
-# 文件系统异常 → HTTP 码;UnicodeDecodeError 是 ValueError 子类,须排在前。
+# UnicodeDecodeError 是 ValueError 子类,须排在前
 _HTTP: dict[type[Exception], int] = {
     UnicodeDecodeError: 415,
     FileNotFoundError: 404,

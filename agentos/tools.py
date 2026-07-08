@@ -48,7 +48,7 @@ def relative(path: str) -> str:
 
 
 def build_share(settings: Settings, assistant_id: str):
-    """构造 share_file:文件已在共享磁盘上,校验存在并返回下载链接。"""
+    """构造 share_file 工具(文件已在共享磁盘,直链下载)。"""
 
     def share_file(path: str) -> str:
         """Share a file from /workspace so the user can download it.

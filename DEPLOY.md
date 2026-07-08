@@ -37,13 +37,13 @@
 # 1) 拉代码
 git clone <repo-url> /data/git/openagentos
 
-# 2) 部署目录 + 共享工作区（在外挂盘挂载点下）+ 未挂载哨兵 + .env（唯一必改 POSTGRES_PASSWORD）
+# 2) 部署目录 + 共享工作区（在外挂盘挂载点下）+ 未挂载哨兵 + .env（必改 POSTGRES_PASSWORD、REDIS_PASSWORD）
 mkdir -p /data/openagentos /data/openagentos/workspace
 touch /data/openagentos/workspace/.mounted   # 未挂载保护哨兵；须落在外挂盘上（盘没挂→文件不在→app 拒启）
 rsync -a --exclude='.env' --exclude='.git/' --exclude='.venv/' \
   /data/git/openagentos/ /data/openagentos/
 cp /data/git/openagentos/.env.example /data/openagentos/.env
-$EDITOR /data/openagentos/.env        # 设 POSTGRES_PASSWORD；OPENAI_* 作全局兜底（可选）
+$EDITOR /data/openagentos/.env        # 设 POSTGRES_PASSWORD、REDIS_PASSWORD；OPENAI_* 作全局兜底（可选）
 
 # 3) 起全栈（构建 + 后台）
 cd /data/openagentos && docker compose up -d --build
@@ -73,19 +73,22 @@ cd /data/openagentos && docker compose up -d --build
 
 ## 注意
 
-- **工作区路径单一真源**：只在 `.env` 的 `AGENTOS_WORKSPACE_HOST` 配一处——compose 既用它做
-  app/沙箱的 bind 源，又经 `sandbox-config` 服务把它注入 `sandbox.toml` 的 `allowed_host_paths`
-  （无需再改 `sandbox.toml`）。改了路径后 `docker compose up -d` 即重渲染生效。
-- **`sandbox.toml` 的 `host_ip`**：默认 `host.docker.internal`（Docker Desktop 可用）；Linux 被
-  防火墙挡时改宿主真实 IP，并 `docker compose up -d --force-recreate opensandbox-server`。
-- **外挂盘写权限**：app 容器默认以 `0:0`（root）运行，与沙箱一致，bind 外挂盘直接可写、双方文件
-  互通。收紧为非 root 时，设 `.env` 的 `AGENTOS_UID/AGENTOS_GID` 为外挂盘属主，并 `chown -R` 工作区。
-- **未挂载保护**：`.env` 的 `AGENTOS_WORKSPACE_SENTINEL`（默认 `.mounted`）——app 启动校验该文件在
-  工作区内存在，否则拒绝启动，防外挂盘没挂好时把数据写到系统盘。部署时务必 `touch <workspace>/.mounted`；
-  留空关闭校验。
+- **工作区路径单一真源**：只在 `.env` 配 `AGENTOS_WORKSPACE_HOST` 一处——compose 既拿它做
+  app/沙箱的 bind 源，又经 `sandbox-config` 注入 `sandbox.toml` 的 `allowed_host_paths`，改后
+  `docker compose up -d` 即重渲染生效。
+- **`sandbox.toml` 的 `host_ip`**：默认 `host.docker.internal`；Linux 被防火墙挡时改宿主真实 IP，
+  再 `docker compose up -d --force-recreate opensandbox-server`。
+- **外挂盘写权限**：app 默认 `0:0`（root），与沙箱一致、bind 直接可写。收紧为非 root 时设
+  `AGENTOS_UID/AGENTOS_GID` 为外挂盘属主并 `chown -R` 工作区。
+- **未挂载保护**：`AGENTOS_WORKSPACE_SENTINEL`（默认 `.mounted`）不在工作区内则 app 拒启，防盘没
+  挂好把数据写进系统盘。部署务必 `touch <workspace>/.mounted`；留空关闭。
+- **密码**：`POSTGRES_PASSWORD`、`REDIS_PASSWORD` 都必改——两者端口都发布到宿主，redis 以
+  `--requirepass` 保护。
+- **资源上限**：compose 给 postgres/redis/app 设了 `deploy.resources.limits`（1g / 512m / 3g），
+  按机器与负载调整。
 - 沙箱由宿主 Docker 经 `docker.sock` 拉起，与 compose 服务同网络
   （`sandbox.toml` 的 `network_mode = openagentos_default`，即 `<部署目录名>_default`）。
 - 迁移：`RUN_MIGRATIONS_ON_STARTUP=true` 启动自动迁移；多实例部署设 `false` 并带外
   `aegra db upgrade`。
-- 共享磁盘是唯一持久真源；沙箱可弃（TTL 到期销毁，下次操作重挂同一 `subPath` 重建）。
-- 单机自托管假设（共享磁盘走宿主目录）；多节点请改用 K8s + PVC（设 `AGENTOS_WORKSPACE_CLAIM`）。
+- 共享磁盘是唯一持久真源；沙箱可弃（TTL 到期销毁，下次操作重挂同一 `subPath` 重建）。单机自托管
+  假设，多节点改用 K8s + PVC（设 `AGENTOS_WORKSPACE_CLAIM`）。

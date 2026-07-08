@@ -1,8 +1,4 @@
-"""官方 LangChain / deepagents 中间件栈:重试 / 上限 / 回退 / 上下文裁剪 / 工具选择 / PII / 自审。
-
-config 驱动。追加到 create_deep_agent 默认栈之后、tail 之前,不替换 todo/skills/filesystem/
-subagents/summarization/memory。build() 与主模型无关;build_review() 需 grader 模型故单列。
-"""
+"""按 config 组装官方中间件栈(重试/上限/回退/裁剪/工具选择/PII/自审),追加到默认栈之后。"""
 
 from __future__ import annotations
 
@@ -41,7 +37,7 @@ def _tool_name(tool: Any) -> str | None:
 
 
 class ToolFilter(AgentMiddleware[Any, Any, Any]):
-    """按名从每次模型请求剔除工具(官方 wrap_model_call hook):deny/禁用的工具对模型不可见。"""
+    """每次模型请求按名剔除工具:deny/禁用的工具对模型不可见。"""
 
     def __init__(self, excluded: set[str]) -> None:
         super().__init__()

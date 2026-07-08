@@ -12,7 +12,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PIIStrategy = Literal["off", "block", "redact", "mask", "hash"]
 Permission = Literal["allow", "ask", "deny"]
 
-# 友好名 → deepagents 工具名(config 里也可直接写工具名;未知键原样透传)。
 TOOL_ALIASES = {"bash": "execute", "read": "read_file", "write": "write_file", "edit": "edit_file"}
 
 SYSTEM_PROMPT = """\
@@ -60,7 +59,7 @@ class Settings(BaseSettings):
     base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
 
-    # 官方中间件(韧性/成本/合规):retry 默认开,其余默认关。
+    # 官方中间件(韧性/成本/合规)
     model_max_retries: int = 2
     tool_max_retries: int = 2
     tool_call_limit: int | None = None
@@ -96,7 +95,7 @@ def get_settings() -> Settings:
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    rubric: str | None = None  # 配了才启用自审迭代(RubricMiddleware)
+    rubric: str | None = None  # 配了才启用自审
     max_iterations: int = 3
 
 
@@ -108,13 +107,13 @@ class AgentConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     assistant_id: str | None = None
-    steps: int | None = None  # 每 run 模型调用上限(防跑飞)
+    steps: int | None = None  # 每 run 模型调用上限
     fallback_model: str | None = None
     pii_strategy: PIIStrategy | None = None
     tools: dict[str, bool] = Field(default_factory=dict)  # {工具: false} 禁用
-    permission: dict[str, Permission] = Field(default_factory=dict)  # allow / ask(→HITL) / deny
+    permission: dict[str, Permission] = Field(default_factory=dict)  # ask → HITL 中断
     review: ReviewConfig = Field(default_factory=ReviewConfig)
-    # 命中的工具调用前挂起,等 Command(resume=...) 决策;需 checkpointer(Aegra 注入)。
+    # 工具调用前挂起等 Command(resume=…);需 checkpointer(Aegra 注入)
     interrupt_on: dict[str, Any] | None = None
 
 
@@ -134,7 +133,7 @@ class ResolvedConfig:
 
 
 def _tool_policy(config: AgentConfig) -> tuple[list[str], dict[str, Any]]:
-    """tools/permission → (禁用工具名去重, ask→HITL 中断);deny/false 排除,ask 中断。"""
+    """tools/permission → (禁用工具名, ask→HITL)。"""
 
     def real(name: str) -> str:
         return TOOL_ALIASES.get(name, name)

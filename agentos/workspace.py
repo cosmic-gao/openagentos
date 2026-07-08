@@ -1,9 +1,4 @@
-"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,<aid>/<tid>/ 存线程持久文件。
-
-同一块盘挂给 app(读 .mcp.json、回传下载)与每个线程沙箱(subPath):
-- .deepagent/<aid>/skills/ → 沙箱内 /workspace/skills(assistant 级,跨线程共享)
-- <aid>/<tid>/            → 沙箱内 /workspace(线程级,沙箱销毁后仍在)
-"""
+"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,<aid>/<tid>/ 存线程持久文件。"""
 
 from __future__ import annotations
 
@@ -17,8 +12,7 @@ SKILLS = "/workspace/skills"
 DEEPAGENT = ".deepagent"
 MCP_FILE = ".mcp.json"
 
-# 长期记忆(虚拟路径,非沙箱磁盘):/memories/ 经 CompositeBackend 路由到持久 store,跨线程。
-# MEMORY_FILE 为启动加载的 AGENTS.md,agent 用 edit_file 自维护。
+# 虚拟路径(非磁盘):/memories/ 经 CompositeBackend 路由到持久 store,跨线程
 MEMORIES = "/memories"
 MEMORY_FILE = "/memories/AGENTS.md"
 

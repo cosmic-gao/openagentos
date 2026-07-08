@@ -28,7 +28,6 @@ FROM base AS final
 COPY --from=builder /app/.venv /app/.venv
 COPY aegra.json ./
 COPY agentos/ ./agentos/
-COPY scripts/ ./scripts/
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 2026

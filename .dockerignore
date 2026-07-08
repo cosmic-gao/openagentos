@@ -1,5 +1,4 @@
 # 缩小 build context：排除构建无关 / 大体积 / 敏感 / 运行时数据。
-# Windows Docker Desktop 经 WSL2 传输上下文，.venv 等大目录会拖慢构建，必须排除。
 
 # Python 虚拟环境与缓存
 .venv/
@@ -28,7 +27,6 @@ sandbox.toml
 # 运行时数据（共享磁盘 / 产物；绝不进镜像）
 workspace/
 .deepagent/
-.artifacts/
 data/
 
 # 日志 / 编辑器 / 操作系统

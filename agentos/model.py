@@ -10,11 +10,10 @@ from pydantic import SecretStr
 
 
 def build(*, model: str | None, base_url: str | None, api_key: str | None) -> BaseChatModel:
-    # model/base_url 由上游保证;此处仅收窄类型,不做校验。
+    # 由上游保证,此处只收窄类型
     name = model or ""
     if name.startswith("anthropic:"):
-        # 原生 Anthropic:激活默认栈的 AnthropicPromptCachingMiddleware;base_url 须指向 Anthropic 协议端点。
-        # 用官方 init_chat_model 工厂(避开 ChatAnthropic 的 alias 构造在类型检查下的误报)。
+        # 原生 Anthropic:激活默认栈的 prompt caching;init_chat_model 避开 ChatAnthropic 的类型检查误报
         from langchain.chat_models import init_chat_model
 
         return init_chat_model(

@@ -1,13 +1,4 @@
-"""aegra.json 入口:make_graph(config, runtime) 按 assistant 构图。
-
-配置来自 assistant 的 config.configurable(model/prompt/api_key/base_url/assistant_id/
-interrupt_on,缺项回退 OPENAI_* env);MCP 来自 .deepagent/<aid>/.mcp.json;skills 由沙箱挂载
-/workspace/skills 提供;长期记忆经 CompositeBackend 把 /memories/ 路由到持久 store。持久化
-(checkpointer/store)由 Aegra 运行时注入。
-
-仅在真正执行(runtime.execution_runtime 非 None)时才载 MCP、写盘;introspection(schema/画图)
-走轻量路径——图拓扑一致,只是不含 MCP 工具(工具集不影响 state schema 与节点结构)。
-"""
+"""aegra.json 入口:make_graph(config, runtime) 按 assistant 构图。"""
 
 from __future__ import annotations
 
@@ -54,6 +45,7 @@ async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
     parsed = AgentConfig.model_validate(conf)
     resolved = resolve(parsed, settings)
 
+    # 仅真正执行时载 MCP、写盘;introspection(schema/画图)走轻量路径,不影响图拓扑
     executing = runtime is None or runtime.execution_runtime is not None
 
     agent_tools = [tools.internet_search, tools.build_share(settings, assistant_id)]

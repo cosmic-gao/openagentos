@@ -1,12 +1,4 @@
-"""MCP 工具载入（langchain-mcp-adapters）。
-
-server 值遵循 langchain-mcp-adapters 的 Connection schema；兼容 Claude/Cursor 的 `type`
-或省略（据 command/url 推断 transport）。`parse` 从 .mcp.json 文本解析；`tools` 从 server
-配置载入工具，结果按内容缓存。
-
-**仅允许远程 http 家族 transport（streamable_http / sse）**：stdio 等会在 app 容器内起子进程、
-不符合服务端场景，一律跳过并告警（见 `_ALLOWED_TRANSPORTS`）。
-"""
+"""MCP 工具载入(langchain-mcp-adapters):parse 解析 .mcp.json,tools 按内容缓存载入。"""
 
 from __future__ import annotations
 
@@ -26,14 +18,12 @@ _TYPE_TO_TRANSPORT = {
     "websocket": "websocket",
 }
 
-# 仅允许远程 http 家族 transport。服务端不宜跑 stdio(会在 app 容器内起子进程,且镜像无 node/uv;
-# langchain-mcp-adapters 亦明确劝退服务端用 stdio)。stdio / websocket / 无法推断者一律跳过并告警;
-# 需放开某类,把它加进此集合即可。
+# 仅远程 http 家族:stdio 会在 app 容器内起子进程(镜像无 node/uv),不符服务端场景;其余跳过并告警
 _ALLOWED_TRANSPORTS = frozenset({"streamable_http", "sse"})
 
 
 def _transport(spec: dict, conn: dict) -> str | None:
-    """推断 server 的 transport:显式优先,否则据 type / command / url 推断,无从判断返回 None。"""
+    """推断 transport:显式 > type > command/url;无从判断返回 None。"""
     if conn.get("transport"):
         return conn["transport"]
     claude_type = spec.get("type")
@@ -47,7 +37,7 @@ def _transport(spec: dict, conn: dict) -> str | None:
 
 
 def _normalize(servers: dict) -> dict:
-    """规整 mcpServers,并按 ``_ALLOWED_TRANSPORTS`` 过滤:非 http/sse 的条目跳过并告警。"""
+    """规整并过滤 mcpServers:非 http/sse 跳过并告警。"""
     normalized: dict = {}
     rejected: list[str] = []
     for name, spec in servers.items():

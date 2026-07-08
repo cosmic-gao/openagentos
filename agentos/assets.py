@@ -1,8 +1,4 @@
-"""助手资产文件管理:.deepagent/<aid>/ 下的增删改移(app 直接操作共享磁盘)。
-
-该目录存 skills/ 与 .mcp.json,区别于每线程沙箱工作区 /workspace。归属与合法性由上游业务方
-保证,本层只做文件操作,让文件系统异常自然上抛(routes 再映射为 HTTP 码)。
-"""
+"""助手资产文件管理:.deepagent/<aid>/ 下的增删改移;异常上抛由 routes 映射 HTTP 码。"""
 
 from __future__ import annotations
 

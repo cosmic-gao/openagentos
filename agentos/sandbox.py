@@ -1,10 +1,4 @@
-"""每线程临时沙箱:按 metadata 发现(connect/resume)或新建,服务端 TTL 到期自动销毁。
-
-持久化在共享卷上,沙箱本身可弃:app 重启或沙箱到期后,下次操作按 metadata 重新发现或重建,
-同一 subPath 重挂,线程文件无损。进程内按 (assistant, thread) 缓存句柄,槽总数受 _MAX_SLOTS
-约束(LRU 丢弃空闲槽,只忘记本地句柄、不 kill,服务端 TTL 回收)。后端从不抛异常、失败以结果
-对象回传;沙箱失联(is_healthy 为假)则忘记句柄、重新发现/重建后重试一次。
-"""
+"""每线程临时沙箱:按 metadata 发现(connect/resume)或新建,服务端 TTL 到期自动销毁。"""
 
 from __future__ import annotations
 
@@ -33,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ASYNC_ONLY = "SessionSandbox is async-only (Aegra invokes graphs with ainvoke)."
-_MAX_SLOTS = 256  # 缓存槽总数上限;超额 LRU 丢弃空闲槽,沙箱由服务端 TTL 回收
+_MAX_SLOTS = 256  # 缓存槽上限;超额 LRU 丢空闲槽,沙箱由服务端 TTL 回收
 
 
 @dataclass
@@ -63,7 +57,7 @@ def _resource(settings: Settings) -> dict[str, str]:
 
 
 def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
-    # SDK 模型字段带 alias(camelCase)且必填,snake_case 过不了类型检查。
+    # SDK 字段是 camelCase alias 且必填,snake_case 过不了类型检查
     from opensandbox.models.sandboxes import PVC, Host, Volume
 
     if settings.workspace_claim:
@@ -122,7 +116,7 @@ async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncO
 
 
 def _trim(keep: tuple[str, str]) -> None:
-    """槽总数压回上限:LRU 丢弃最旧的空闲(未加锁)槽,连同被 _forget 置空的空槽。"""
+    """压回上限:LRU 丢弃最旧的空闲槽(未加锁)。"""
     while len(_slots) > _MAX_SLOTS:
         victim = next(
             (key for key, slot in _slots.items() if key != keep and not slot.lock.locked()),
@@ -134,7 +128,7 @@ def _trim(keep: tuple[str, str]) -> None:
 
 
 def _forget(key: tuple[str, str], backend: AsyncOpenSandboxBackend) -> None:
-    """忘记失联句柄,仅当槽内仍是同一实例(避免误删并发刚刷新的新句柄)。"""
+    """忘记失联句柄;仅当槽内仍是同一实例(避免误删并发新句柄)。"""
     slot = _slots.get(key)
     if slot is not None and slot.backend is backend:
         slot.backend = None
