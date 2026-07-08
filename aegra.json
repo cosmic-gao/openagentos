@@ -6,5 +6,8 @@
   "http": {
     "app": "./agentos/routes.py:app",
     "enable_custom_route_auth": true
+  },
+  "auth": {
+    "path": "./agentos/auth.py:auth"
   }
 }

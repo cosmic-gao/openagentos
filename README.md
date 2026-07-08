@@ -150,6 +150,7 @@ openagentos/
 │   ├── builder.py          # 组装：model + tools + subagents → create_deep_agent
 │   ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
 │   ├── assets.py           # .deepagent/<aid>/ 资产文件的增删改移（限定目录内）
+│   ├── auth.py             # 自定义鉴权：从 x-tenant-id / x-user-id 头解析身份
 │   └── routes.py           # Aegra 自定义 HTTP：线程文件下载 + /assistants/{aid} 资产管理
 └── scripts/
     └── smoke_test.py       # 用 LangGraph SDK 流式跑一轮
@@ -288,10 +289,14 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
   （namespace 按 `assistant_id` 隔离）。启动时加载 `/memories/AGENTS.md`，agent 用 `edit_file`
   自维护记忆实现跨会话学习。`/workspace`（线程私有）与 `/memories/`（助手级持久）各司其职。
   想要向量语义检索，再在 `aegra.json` 加 `store.index` 块（见配置参考）。
-- **鉴权**默认无（开发态）。在 `aegra.json` 加 `auth` 块以启用 JWT/OAuth/Firebase ——
+- **鉴权**由 `aegra.json` 的 `auth` 块启用，指向 [agentos/auth.py](agentos/auth.py)：从请求头
+  `x-tenant-id` / `x-user-id` 解析身份（`identity = <tenant>:<user>`，缺任一即 401）。启用后
+  **所有** Agent Protocol 端点与自定义路由都要求带这两个头——`scripts/smoke_test.py` 及任何客户端
+  须在请求头里带 `x-tenant-id` / `x-user-id`。改用 JWT/OAuth/Firebase 见
   <https://docs.aegra.dev/guides/authentication>。
-  > ⚠️ 自定义路由（`routes.py` 的文件下载 / 资产管理）只走认证、**不做归属鉴权**：开启 auth
-  > 后仍需在处理函数里按 `langgraph_auth_user` 校验该用户是否拥有对应 assistant。多租户部署尤须注意。
+  > ⚠️ 目前只做**认证**（确定"你是谁"），不做**归属鉴权**（不校验"你能否访问这个 assistant/thread"）：
+  > 两个头只填充身份、不自动隔离数据。要按租户/用户隔离，需加 `@auth.on` 处理器（往 metadata 注入
+  > owner 并按 owner 过滤），或在 `routes.py` 处理函数里按 `user` 显式校验。
 
 ## 部署
 
