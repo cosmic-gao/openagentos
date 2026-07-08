@@ -1,0 +1,11 @@
+# 强制 LF 行尾:这些文件会进入 Linux 容器或被 shell 解析,Windows 检出的 CRLF 会破坏
+# `#!/usr/bin/env bash` shebang、容器构建与 env/toml 解析。
+
+*.sh           text eol=lf
+Dockerfile     text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.toml         text eol=lf
+.env.example   text eol=lf
+.dockerignore  text eol=lf
+.gitattributes text eol=lf

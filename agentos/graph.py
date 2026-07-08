@@ -66,9 +66,9 @@ async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
 
     return builder.build(
         resolved=resolved,
+        settings=settings,
         backend=backend,
         tools=agent_tools,
         skills=skills,
         memory=memory,
-        interrupt_on=parsed.interrupt_on,
     )

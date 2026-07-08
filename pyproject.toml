@@ -27,6 +27,7 @@ dependencies = [
     # 沙箱执行：把 OpenSandbox 容器桥接为 DeepAgents backend（每线程一个沙箱）。
     "deepagents-opensandbox",
     "opensandbox>=0.1.13",
+    "langchain-anthropic>=1.0",
 ]
 
 [tool.uv]

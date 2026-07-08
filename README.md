@@ -186,7 +186,11 @@ store）。见 <https://docs.aegra.dev/reference/configuration>。
     "api_key": "sk-...",
     "base_url": "https://your-gateway/v1",
     "assistant_id": "finance-bot",
-    "interrupt_on": { "execute": true }
+    "interrupt_on": { "execute": true },
+    "steps": 40,
+    "fallback_model": "gpt-4o-mini",
+    "pii_strategy": "redact",
+    "permission": { "execute": "ask", "write_file": "deny" }
   }
 }
 ```
@@ -203,6 +207,21 @@ MCP 与 skills 不在 config 里——放共享磁盘 `workspace/.deepagent/<ass
 `{工具名: {"allowed_decisions": ["approve","edit","reject"], "description": "..."}}`。命中的
 工具在调用前挂起，等客户端用 `Command(resume=...)` 决策后继续（需 checkpointer——Aegra 已
 默认注入）。缺省不中断。常用于对 `execute`（沙箱执行 shell）设人工审批。
+
+**官方中间件（韧性/成本/合规/上下文，可选）**：追加 LangChain / deepagents 官方中间件到默认栈之后（不替换
+skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RETRIES` / `AGENTOS_TOOL_MAX_RETRIES`
+默认 2、`AGENTOS_TOOL_CALL_LIMIT`、`AGENTOS_FALLBACK_MODEL`、`AGENTOS_PII_STRATEGY`、`AGENTOS_CONTEXT_EDITING`
+默认开、`AGENTOS_TOOL_SELECTOR_MAX`）；每助手可在 config 覆盖 `steps`（每 run 模型调用上限）、`fallback_model`、
+`pii_strategy`（`off`/`redact`/`mask`/`hash`/`block`）、`review.rubric`（配了即启用自审迭代）。装配见
+[agentos/middleware.py](agentos/middleware.py)。
+
+**工具治理（每助手，可选）**：`tools`（`{工具: false}` 禁用）与 `permission`（`allow`/`ask`/`deny`）——
+`deny`/禁用经官方 `wrap_model_call` 对模型隐藏该工具，`ask` 并入 `interrupt_on`（HITL 审批）。友好名
+`bash`/`read`/`write`/`edit` 自动映射为 `execute`/`read_file`/`write_file`/`edit_file`。
+
+**原生 Anthropic（可选）**：`model` 用 `anthropic:` 前缀（如 `anthropic:claude-sonnet-4-5`）走
+`langchain-anthropic`，激活默认栈里的 `AnthropicPromptCachingMiddleware`（静态段缓存）；`base_url` 须指向
+**Anthropic 协议**端点（网关需开 Anthropic 直通口，OpenAI 格式口不行）。缺省仍走 `ChatOpenAI` 网关。
 
 ### 环境变量（`.env`，全局兜底）
 

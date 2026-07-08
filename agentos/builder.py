@@ -6,8 +6,8 @@ from typing import Any
 
 from deepagents import SubAgent, create_deep_agent
 
-from agentos import model
-from agentos.config import RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig
+from agentos import middleware, model
+from agentos.config import RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
 from agentos.tools import internet_search
 
 
@@ -28,20 +28,21 @@ def _research(llm: Any) -> SubAgent:
 def build(
     *,
     resolved: ResolvedConfig,
+    settings: Settings,
     backend: Any,
     tools: list,
     skills: list[str] | None,
     memory: list[str] | None = None,
-    interrupt_on: dict[str, Any] | None = None,
 ) -> Any:
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
     return create_deep_agent(
         model=llm,
         tools=tools,
         system_prompt=resolved.prompt or SYSTEM_PROMPT,
+        middleware=[*middleware.build(resolved, settings), *middleware.build_review(resolved, llm)],
         subagents=[_research(llm)],
         backend=backend,
         skills=skills,
         memory=memory,
-        interrupt_on=interrupt_on,
+        interrupt_on=resolved.interrupt_on or None,
     )
