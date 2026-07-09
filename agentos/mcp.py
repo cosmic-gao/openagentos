@@ -5,10 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 _cache: dict[str, list] = {}
+
+# 单个 MCP server 载入(连接 + 列 tools)的超时秒数。配错的 server(如把 url 指向普通网站)
+# 会在 MCP 协议层一直等 initialize 响应而卡死,HTTP 超时救不了;这里用硬超时兜底,可用环境变量覆盖。
+_LOAD_TIMEOUT_S = float(os.getenv("AGENTOS_MCP_LOAD_TIMEOUT", "20"))
 
 _TYPE_TO_TRANSPORT = {
     "stdio": "stdio",
@@ -73,8 +78,9 @@ def parse(text: str | None) -> dict:
 async def tools(servers: dict) -> list:
     """把 mcpServers 配置载入为 tools(无配置返回 [];按规整后内容缓存,同配置只连一次)。
 
-    逐个 server 并发载入;单个 server 连接/握手失败降级为 warning 并跳过,不影响其余 server
-    (MultiServerMCPClient.get_tools() 内部用不带 return_exceptions 的 gather,一个坏 server 会整批失败)。
+    逐个 server 并发载入,每个套 _LOAD_TIMEOUT_S 硬超时;单个 server 超时/连接/握手失败降级为
+    warning 并跳过,不影响其余 server(否则:配错的 server 会卡死 initialize,而
+    MultiServerMCPClient.get_tools() 内部又是不带 return_exceptions 的 gather,一个坏 server 会拖垮整批)。
     """
     if not servers:
         return []
@@ -90,7 +96,17 @@ async def tools(servers: dict) -> list:
 
     async def _load(name: str) -> list:
         try:
-            return await client.get_tools(server_name=name)
+            return await asyncio.wait_for(
+                client.get_tools(server_name=name), timeout=_LOAD_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Skipping MCP server %r: not ready within %.0fs "
+                "(unreachable, or the URL is not an MCP endpoint)",
+                name,
+                _LOAD_TIMEOUT_S,
+            )
+            return []
         except Exception as exc:  # noqa: BLE001 - 任何 server 的连接/握手失败都不应拖垮其余
             logger.warning("Skipping MCP server %r after load failure: %s", name, exc)
             return []
