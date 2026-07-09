@@ -215,7 +215,7 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
 | `OPEN_SANDBOX_DOMAIN` / `OPEN_SANDBOX_API_KEY` | OpenSandbox 服务器地址 / 鉴权 |
 | `AGENTOS_SANDBOX_IMAGE` | 沙箱镜像（默认 `python:3.12`） |
-| `AGENTOS_SANDBOX_TTL` | 沙箱寿命秒数（默认 `1800`，到期服务端销毁） |
+| `AGENTOS_SANDBOX_TTL` | 沙箱寿命秒数（默认 `300`，到期服务端销毁） |
 | `AGENTOS_SANDBOX_TIMEOUT` | 可选，每条命令默认超时（秒） |
 | `AGENTOS_SERVER_PROXY` | 经 OpenSandbox 服务器代理转发（compose 常态，默认 `true`） |
 
