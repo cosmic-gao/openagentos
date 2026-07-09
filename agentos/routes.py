@@ -12,6 +12,7 @@ assets/workspace 会抛的窄类型(ValueError/OSError),勿注册 Exception/HTTP
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -20,7 +21,9 @@ from pydantic import BaseModel
 from agentos import assets, workspace
 from agentos.config import get_settings, safe_segment
 
-app = FastAPI(title="OpenAgentOS files")
+# root_path 取自 public_url 的路径部分:反代挂子路径(如 /aegra)时,令 /docs、/redoc、openapi
+# 指向带前缀的 URL(反代须剥该前缀转发);与下载直链共用 AGENTOS_PUBLIC_URL 一个开关,独立部署留空。
+app = FastAPI(title="OpenAgentOS files", root_path=urlparse(get_settings().public_url).path.rstrip("/"))
 
 
 _STATUS: dict[type[Exception], int] = {
