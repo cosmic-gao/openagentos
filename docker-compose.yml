@@ -7,7 +7,13 @@ services:
     container_name: ${PROJECT_NAME:-openagentos}-postgres
     restart: unless-stopped
     env_file: [.env]
-    command: ["-p", "${POSTGRES_PORT:-15432}"]
+    command:
+      - "-p"
+      - "${POSTGRES_PORT:-15432}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-400}"   # 须 ≥ 各实例 DB 池连接之和(单实例~150)
+      - "-c"
+      - "shared_buffers=512MB"
     ports:
       - "${POSTGRES_PORT:-15432}:${POSTGRES_PORT:-15432}"
     volumes:
@@ -22,7 +28,7 @@ services:
       options: {max-size: "20m", max-file: "5"}
     deploy:
       resources:
-        limits: {cpus: "1", memory: "1g"}   # 单机部署资源上限,按机器/负载调整
+        limits: {cpus: "2", memory: "3g"}   # 撑 max_connections=400 + shared_buffers;按机器/负载调整
 
   # ── Aegra 依赖：Redis（任务队列 / SSE pub-sub / 崩溃恢复）──
   redis:
@@ -88,6 +94,29 @@ services:
       start_period: 20s
     logging: *logging
 
+  # ── 预拉沙箱运行时镜像 ──
+  # 沙箱基础镜像与 opensandbox/execd 不是 compose service,而是 opensandbox 经 docker.sock
+  # 在首次建沙箱时才按需拉;拉取耗时会超过 create 的读超时 → SandboxInternalException。
+  # 这里在 up 时先拉好(仅缺失才拉,离线且已在则跳过),app 等它完成再放行。
+  sandbox-images:
+    image: docker:cli
+    container_name: ${PROJECT_NAME:-openagentos}-sandbox-images
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      SANDBOX_IMAGE: ${AGENTOS_SANDBOX_IMAGE:-python:3.12-slim}
+      # 须与 opensandbox/server 期望的 execd 版本一致;升级 server 后同步改这里。
+      EXECD_IMAGE: ${SANDBOX_EXECD_IMAGE:-opensandbox/execd:v1.0.19}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        for img in "$$SANDBOX_IMAGE" "$$EXECD_IMAGE"; do
+          docker image inspect "$$img" >/dev/null 2>&1 || docker pull "$$img"
+        done
+
   # ── OpenAgentOS app（Aegra 托管 agentos 图）──
   openagentos:
     image: "openagentos:${TAG:-latest}"
@@ -132,6 +161,7 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
       opensandbox-server: {condition: service_started}
+      sandbox-images: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,os; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','2026')+'/health', timeout=5)"]
       interval: 30s
@@ -141,7 +171,7 @@ services:
     logging: *logging
     deploy:
       resources:
-        limits: {cpus: "2", memory: "3g"}
+        limits: {cpus: "4", memory: "6g"}   # 100 并发 run 目标;单 uvicorn=单事件循环,加核收益递减,再上量走横向加副本
 
 volumes:
   postgres_data:
