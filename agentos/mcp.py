@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -50,7 +51,7 @@ def _normalize(servers: dict) -> dict:
         normalized[name] = conn
     if rejected:
         logger.warning(
-            "忽略非 http/sse 的 MCP server(仅允许 %s): %s",
+            "Ignoring non-http/sse MCP server(s) (only %s allowed): %s",
             "/".join(sorted(_ALLOWED_TRANSPORTS)),
             ", ".join(rejected),
         )
@@ -70,7 +71,11 @@ def parse(text: str | None) -> dict:
 
 
 async def tools(servers: dict) -> list:
-    """把 mcpServers 配置载入为 tools(无配置返回 [];按规整后内容缓存,同配置只连一次)。"""
+    """把 mcpServers 配置载入为 tools(无配置返回 [];按规整后内容缓存,同配置只连一次)。
+
+    逐个 server 并发载入;单个 server 连接/握手失败降级为 warning 并跳过,不影响其余 server
+    (MultiServerMCPClient.get_tools() 内部用不带 return_exceptions 的 gather,一个坏 server 会整批失败)。
+    """
     if not servers:
         return []
     normalized = _normalize(servers)
@@ -81,6 +86,16 @@ async def tools(servers: dict) -> list:
 
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    result = await MultiServerMCPClient(normalized).get_tools()
+    client = MultiServerMCPClient(normalized)
+
+    async def _load(name: str) -> list:
+        try:
+            return await client.get_tools(server_name=name)
+        except Exception as exc:  # noqa: BLE001 - 任何 server 的连接/握手失败都不应拖垮其余
+            logger.warning("Skipping MCP server %r after load failure: %s", name, exc)
+            return []
+
+    loaded = await asyncio.gather(*(_load(name) for name in normalized))
+    result = [tool for server_tools in loaded for tool in server_tools]
     _cache[key] = result
     return result
