@@ -11,6 +11,7 @@
 | `sandbox-config` | 一次性 init：把 `AGENTOS_WORKSPACE_HOST` 注入 `sandbox.toml` 的 `allowed_host_paths` |
 | `opensandbox-server` | 经宿主 docker.sock 拉起/管理沙箱容器（execd 镜像 `opensandbox/execd`） |
 | `openagentos`（app） | `aegra serve`，托管 `agentos` 图 |
+| `langfuse-*`（profile `langfuse`，opt-in） | 可观测性:每次 LLM 调用的 token/耗时/成本进 trace（见 [可观测性](#可观测性otel--langfuseopt-in)） |
 
 一块**外挂磁盘**上的**共享工作区**（宿主 `AGENTOS_WORKSPACE_HOST`，唯一真源）同时挂给 app 与每个
 沙箱：app 读 `.mcp.json`、回传下载；沙箱按 `subPath` bind `/workspace`（线程私有）与
@@ -70,6 +71,48 @@ cd /data/openagentos && docker compose up -d --build
 
 创建 assistant 时把 `model/prompt/api_key/base_url` 放进 `config.configurable`；MCP 与 skills
 放共享磁盘 `workspace/.deepagent/<assistant_id>/`（`.mcp.json` 与 `skills/`）。详见 [README](README.md)。
+
+## 可观测性(OTEL / Langfuse,opt-in)
+
+Aegra 已内置 OpenTelemetry + OpenInference 自动埋点:开启后**每次 LLM 调用的 token 数(输入/输出/
+总)、耗时、模型名**都会作为 span 上报,Langfuse 按 trace/session 聚合并算成本。默认**不启**——这是
+一个 opt-in 的 compose profile,不占资源。
+
+Langfuse v3 栈为 6 个专用服务(`langfuse-web` / `langfuse-worker` / `langfuse-postgres` /
+`langfuse-clickhouse` / `langfuse-redis` / `langfuse-minio`),与 Aegra 主栈的 postgres/redis
+完全隔离,额外约 **4-6GB 内存**(ClickHouse 占大头)。
+
+### 启用
+
+```bash
+# 1) 生成密钥并填进 .env(见 .env.example 末尾「Langfuse 栈」块)
+openssl rand -hex 32     # → LANGFUSE_ENCRYPTION_KEY(须 64 位十六进制)
+openssl rand -base64 32  # → LANGFUSE_SALT
+openssl rand -base64 32  # → LANGFUSE_NEXTAUTH_SECRET
+#    另设 LANGFUSE_{POSTGRES,CLICKHOUSE,REDIS,MINIO_ROOT}_PASSWORD、LANGFUSE_INIT_USER_PASSWORD
+
+# 2) 打开 app 侧上报开关(.env「可观测性」块):
+#    OTEL_TARGETS=LANGFUSE
+#    LANGFUSE_PUBLIC_KEY=pk-lf-...   ← app 与 Langfuse 首启初始化同源一对 key
+#    LANGFUSE_SECRET_KEY=sk-lf-...
+
+# 3) 起全栈 + Langfuse profile(app 会自动重连 langfuse-web:3000)
+docker compose --profile langfuse up -d --build
+```
+
+- **UI**:`http://localhost:3000`(`LANGFUSE_WEB_PORT` 可改),用 `LANGFUSE_INIT_USER_EMAIL` /
+  `LANGFUSE_INIT_USER_PASSWORD` 登录;项目与 API key 已由 `LANGFUSE_INIT_*` 首启自动建好,无需手动复制。
+- **key 同源**:app 的 `LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` 同时用作 Langfuse 初始化的项目 key,
+  故开箱即通;上报端点为 `http://langfuse-web:3000/api/public/otel/v1/traces`(compose 内网,已自动配好)。
+- **顺序无所谓**:app 不 `depends_on` Langfuse。profile 没起或 Langfuse 还在启动时,app 只是导出失败并
+  记日志(非致命);Langfuse 就绪后自动恢复上报。
+- **关闭**:`docker compose --profile langfuse down`(仅停 Langfuse,主栈不动);把 `OTEL_TARGETS` 置空
+  即彻底关掉 app 端上报。数据卷 `langfuse_*` 保留,`down -v` 才连数据一起删。
+- **外部 Langfuse**:不想自托管就跳过 profile,只在 `.env` 设 `OTEL_TARGETS=LANGFUSE` +
+  `LANGFUSE_BASE_URL=https://cloud.langfuse.com`(或自有地址)+ 该项目的 key 即可。
+
+> ⚠️ **端口 3000**:Langfuse UI 默认发布到宿主所有网卡。公网机器请用防火墙/反代限制,或把
+> `LANGFUSE_WEB_PORT` 映射改为仅本机。其余 5 个 Langfuse 服务不发布端口(仅 compose 内网可达)。
 
 ## 注意
 

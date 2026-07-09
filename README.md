@@ -213,6 +213,8 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
 | `AGENTOS_PUBLIC_URL` | 下载链接前缀（`download_file` / `/files` 路由） |
 | `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
+| `OTEL_TARGETS` | 可观测性总开关（默认空=关；设 `LANGFUSE` 上报 token/耗时/成本到 Langfuse） |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Langfuse 项目 key 与地址（见「可观测性」） |
 | `OPEN_SANDBOX_DOMAIN` / `OPEN_SANDBOX_API_KEY` | OpenSandbox 服务器地址 / 鉴权 |
 | `AGENTOS_SANDBOX_IMAGE` | 沙箱镜像（默认 `python:3.12`） |
 | `AGENTOS_SANDBOX_TTL` | 沙箱寿命秒数（默认 `300`，到期服务端销毁） |
@@ -305,6 +307,19 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
   > `assistant_id`（`/assistants/{id}/files…`）或 `thread_id`（`/files/{thread_id}/…`）即可读写对应文件；
   > 默认 `system` assistant 更是人人可见。这是**刻意设计**——归属由上游可信网关保证。要在本服务内强制，
   > 加 `@auth.on` 处理器或在 `routes.py` 里按 `user` 校验资源归属。
+
+## 可观测性(OTEL / Langfuse)
+
+Aegra 内置 OpenTelemetry + OpenInference 自动埋点,开启后**每次 LLM 调用的 token 数、耗时、模型名**
+都作为 span 上报,Langfuse 按 trace/session 聚合并算成本——这是拿到「每个 run 消耗多少 token、花了多久」
+的推荐方式(run 对象本身不返回聚合用量)。默认**关闭**(`OTEL_TARGETS` 空)。
+
+- **自托管**:`docker-compose.yml` 已带一个 opt-in 的 `langfuse` profile(6 个专用服务,与主栈隔离)。
+  填好 `.env` 密钥、设 `OTEL_TARGETS=LANGFUSE`,`docker compose --profile langfuse up -d` 即可,
+  UI 在 `http://localhost:3000`。完整步骤见 [DEPLOY.md](DEPLOY.md#可观测性otel--langfuseopt-in)。
+- **外部 Langfuse / 云**:跳过 profile,只在 `.env` 设 `OTEL_TARGETS=LANGFUSE` + `LANGFUSE_BASE_URL` +
+  项目 key 即可。
+- 也支持 Phoenix / 通用 OTLP target(`OTEL_TARGETS=PHOENIX` 等),配置见 Aegra 文档。
 
 ## 部署
 

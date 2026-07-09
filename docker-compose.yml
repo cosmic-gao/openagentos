@@ -138,6 +138,10 @@ services:
       OPEN_SANDBOX_DOMAIN: opensandbox-server:8080
       PORT: ${PORT:-2026}
       AGENTOS_WORKSPACE: /workspace-data
+      # 可观测性:app 经 OTLP 把 trace(含每次 LLM 调用的 token 数与耗时)推给 Langfuse。
+      # 覆盖 Aegra 默认的 localhost:3000 为 compose 内网服务名;仅当 .env 设 OTEL_TARGETS=LANGFUSE
+      # 且起了 langfuse profile 才实际导出,否则空转、非致命(不 depends_on,Langfuse 可后启/不启)。
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
     ports:
       - "${PORT:-2026}:${PORT:-2026}"
     volumes:
@@ -173,7 +177,192 @@ services:
       resources:
         limits: {cpus: "4", memory: "6g"}   # 100 并发 run 目标;单 uvicorn=单事件循环,加核收益递减,再上量走横向加副本
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Langfuse v3 可观测性栈 —— opt-in profile「langfuse」(默认不启)
+  #   启用:  docker compose --profile langfuse up -d
+  #   还需在 .env 设 OTEL_TARGETS=LANGFUSE + LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY,
+  #   app 才会把 trace 推过来(见 .env.example 的「可观测性」块)。
+  # 专用独立实例(langfuse-postgres / langfuse-redis 等),与 Aegra 主栈的
+  # postgres / redis 完全隔离,不动其连接预算与调优。UI:http://localhost:${LANGFUSE_WEB_PORT:-3000}
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Langfuse 事务库(专用 Postgres,与 Aegra 的 postgres 隔离)──
+  langfuse-postgres:
+    image: postgres:17
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-postgres
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: "1g"}
+
+  # ── Langfuse OLAP 存储(ClickHouse:trace / observation / score)──
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-clickhouse
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-change-me}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: "2g"}   # ClickHouse 内存敏感,单机 2g 起步,按 trace 量调大
+
+  # ── Langfuse 队列 / 缓存(专用 Redis,与 Aegra 的 redis 隔离)──
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-redis
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    # Langfuse(BullMQ)要求 maxmemory-policy=noeviction,勿改。
+    command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD:-change-me}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_PASSWORD:-change-me}", "--no-auth-warning", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: "512m"}
+
+  # ── Langfuse blob 存储(MinIO,S3 兼容;存事件/媒体 blob)──
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-minio
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    entrypoint: sh
+    # 预建 langfuse 桶(path-style 即 /data 下同名目录),再起 server。
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:-change-me}
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: "512m"}
+
+  # ── Langfuse worker(异步摄取:批量把事件落 ClickHouse)──
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-worker
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      langfuse-minio: {condition: service_healthy}
+    environment: &langfuse-common-env
+      DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD:-change-me}@langfuse-postgres:5432/postgres
+      SALT: ${LANGFUSE_SALT:-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "true"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-change-me}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-change-me}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-change-me}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:-change-me}
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: "1g"}
+
+  # ── Langfuse web(UI + API + OTEL 摄取端点 /api/public/otel/v1/traces)──
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: ${PROJECT_NAME:-openagentos}-langfuse-web
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      langfuse-minio: {condition: service_healthy}
+    ports:
+      - "${LANGFUSE_WEB_PORT:-3000}:3000"
+    environment:
+      # 复用 worker 的公共环境,再叠加 web 专属(鉴权 + 首启初始化)。
+      <<: *langfuse-common-env
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:${LANGFUSE_WEB_PORT:-3000}}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-change-me}
+      # 首启自动建 org/project/user + 固定 API key;项目 key 与 app 侧 LANGFUSE_*_KEY 同源,
+      # 故 app 无需手动去 UI 复制 key 即可直接认证上报。
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-openagentos}
+      LANGFUSE_INIT_ORG_NAME: OpenAgentOS
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-openagentos}
+      LANGFUSE_INIT_PROJECT_NAME: OpenAgentOS
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-change-me}
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: "1g"}
+
 volumes:
   postgres_data:
   redis_data:
   sandbox_config:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_redis_data:
+  langfuse_minio_data:
