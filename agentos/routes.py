@@ -18,7 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-from agentos import assets, workspace
+from agentos import assets, sandbox, workspace
 from agentos.config import get_settings, safe_segment
 
 # root_path 取自 public_url 的路径部分:反代挂子路径(如 /aegra)时,令 /docs、/redoc、openapi
@@ -80,6 +80,34 @@ def download(thread_id: str, rel: str) -> FileResponse:
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(target, filename=target.name)
+
+
+class ExecuteBody(BaseModel):
+    code: str
+    language: str = "python"
+    timeout: int | None = None
+
+
+class ExecuteResult(BaseModel):
+    output: str  # 按时间戳合并的 stdout + stderr
+    exit_code: int | None = None  # 0 为成功
+    truncated: bool = False
+
+
+@app.post("/sandboxes/execute", tags=["Sandbox"])
+async def execute(body: ExecuteBody) -> ExecuteResult:
+    """新建临时沙箱执行 code(默认 python)、完成即销毁——单次、无状态、无会话。
+
+    返回按时间戳合并的 stdout+stderr 与退出码。程序非零退出仍返回 200(结果在 exit_code /
+    output);语言不支持返回 400。
+    """
+    result = await sandbox.run(
+        get_settings(),
+        body.code,
+        language=body.language,
+        timeout=body.timeout,
+    )
+    return ExecuteResult(output=result.output, exit_code=result.exit_code, truncated=result.truncated)
 
 
 @app.get("/assistants/{assistant_id}/files", tags=["Assistants"])

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import httpx
 from deepagents.backends.protocol import (
@@ -271,3 +273,46 @@ class SessionSandbox(BaseSandbox):
 def session(settings: Settings, assistant_id: str) -> SessionSandbox:
     """按 (assistant, thread) 多路复用的每线程沙箱后端。"""
     return SessionSandbox(settings, assistant_id)
+
+
+# language → (临时文件后缀, 解释器命令);默认镜像 python:3.12 保证 python/bash 可用。
+_RUNNERS: dict[str, tuple[str, str]] = {
+    "python": ("py", "python"),
+    "bash": ("sh", "bash"),
+    "sh": ("sh", "sh"),
+    "node": ("js", "node"),
+    "javascript": ("js", "node"),
+}
+
+
+async def run(
+    settings: Settings,
+    code: str,
+    *,
+    language: str = "python",
+    timeout: int | None = None,
+) -> ExecuteResponse:
+    """新建临时沙箱执行 code、完成即销毁——单次、无状态、不挂持久卷。
+
+    语言不支持抛 ValueError,落盘失败抛 OSError;后端从不抛异常,程序失败以非零退出码回传。
+    """
+    runner = _RUNNERS.get(language.lower())
+    if runner is None:
+        raise ValueError(f"unsupported language {language!r}; expected one of {sorted(_RUNNERS)}")
+    ext, interp = runner
+
+    backend = await AsyncOpenSandboxBackend.create(
+        settings.sandbox_image,
+        connection_config=_connection(settings),
+        timeout=timedelta(seconds=settings.sandbox_ttl),
+        default_timeout=settings.sandbox_timeout,
+        resource=_resource(settings),
+    )
+    try:
+        path = f"/tmp/{uuid4().hex}.{ext}"
+        staged = await backend.aupload_files([(path, code.encode())])
+        if staged and staged[0].error:
+            raise OSError(f"failed to stage code in sandbox: {staged[0].error}")
+        return await backend.aexecute(f"{interp} {shlex.quote(path)}", timeout=timeout)
+    finally:
+        await backend.aclose()
