@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     tool_call_limit: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy = "off"
+    # 密钥/凭据兜底脱敏(纵深防御最后一道,独立于 pii_strategy,默认开)。
+    secret_redaction: bool = True
+    secret_redaction_strategy: Literal["redact", "mask", "hash", "block"] = "redact"
     context_editing: bool = True
     tool_selector_max: int | None = None
 

@@ -18,7 +18,7 @@ from langchain.agents.middleware import (
 )
 from langchain.agents.middleware.types import AgentState
 
-from agentos import model
+from agentos import model, redaction
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -112,6 +112,9 @@ def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[
                     kind, strategy=strategy, apply_to_input=True, apply_to_tool_results=True
                 )
             )
+    # 密钥兜底:独立于 pii_strategy,默认开;输入/输出/工具结果全覆盖。
+    if settings.secret_redaction:
+        stack.append(redaction.secret_middleware(settings.secret_redaction_strategy))
     if resolved.excluded_tools:
         stack.append(ToolFilter(set(resolved.excluded_tools)))
     return stack
