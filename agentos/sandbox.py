@@ -275,13 +275,12 @@ def session(settings: Settings, assistant_id: str) -> SessionSandbox:
     return SessionSandbox(settings, assistant_id)
 
 
-# language → (临时文件后缀, 解释器命令);默认镜像 python:3.12 保证 python/bash 可用。
+# language → (临时文件后缀, 解释器命令);仅登记默认镜像 python:3.12 保证可用的解释器。
+# 需 node 等其他运行时,先把 AGENTOS_SANDBOX_IMAGE 换成含该运行时的镜像,再在此登记对应项。
 _RUNNERS: dict[str, tuple[str, str]] = {
     "python": ("py", "python"),
     "bash": ("sh", "bash"),
     "sh": ("sh", "sh"),
-    "node": ("js", "node"),
-    "javascript": ("js", "node"),
 }
 
 
