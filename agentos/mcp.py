@@ -64,7 +64,7 @@ def _normalize(servers: dict) -> dict:
 
 
 def parse(text: str | None) -> dict:
-    """解析 .mcp.json 文本为规整后的 mcpServers 配置(容错,失败返回空)。"""
+    """解析 .mcp.json 文本,取出 mcpServers 段(容错,失败返回空);规整与安全过滤留给 tools() 载入前做,避免重复。"""
     if not text:
         return {}
     try:
@@ -72,7 +72,7 @@ def parse(text: str | None) -> dict:
     except ValueError:
         return {}
     servers = data.get("mcpServers") if isinstance(data, dict) else None
-    return _normalize(servers) if isinstance(servers, dict) else {}
+    return servers if isinstance(servers, dict) else {}
 
 
 async def tools(servers: dict) -> list:

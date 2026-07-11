@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Literal
 
 from langgraph.config import get_config
@@ -116,7 +117,9 @@ class Settings(BaseSettings):
     server_proxy: bool = True
 
 
+@lru_cache
 def get_settings() -> Settings:
+    """全局配置单例:env/.env 只读一次(pydantic-settings 每次实例化都会重读文件+重解析)。"""
     return Settings()
 
 

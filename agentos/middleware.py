@@ -106,12 +106,10 @@ def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[
         stack.append(LLMToolSelectorMiddleware(max_tools=settings.tool_selector_max))
     strategy = resolved.pii_strategy
     if strategy != "off":
-        for kind in _PII_TYPES:
-            stack.append(
-                PIIMiddleware(
-                    kind, strategy=strategy, apply_to_input=True, apply_to_tool_results=True
-                )
-            )
+        stack.extend(
+            PIIMiddleware(kind, strategy=strategy, apply_to_input=True, apply_to_tool_results=True)
+            for kind in _PII_TYPES
+        )
     # 密钥兜底:独立于 pii_strategy,默认开;输入/输出/工具结果全覆盖。
     if settings.secret_redaction:
         stack.append(redaction.secret_middleware(settings.secret_redaction_strategy))
