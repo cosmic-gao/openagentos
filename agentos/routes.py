@@ -12,6 +12,7 @@ Aegra 以 custom_app_module 从文件加载本模块(不入 sys.modules),Pydanti
 不复核资源归属;要在本服务内强制,按 user 校验或加 @auth.on 处理器。
 """
 
+import json
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
@@ -19,7 +20,7 @@ from urllib.parse import urlparse
 from aegra_api.models.errors import BAD_REQUEST, UNAVAILABLE
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agentos import assets, sandbox, workspace
 from agentos.config import get_settings, safe_segment
@@ -101,6 +102,13 @@ class ExecuteBody(BaseModel):
     stdin: str | None = Field(None, max_length=_MAX_CHARS, description="标准输入文本")
     params: dict[str, Any] = Field(default_factory=dict, description="参数对象:python 里为变量 params;bash/sh 经 $PARAMS(JSON)")
     timeout: int = Field(30, ge=1, le=_MAX_TIMEOUT, description=f"超时秒数,范围 [1, {_MAX_TIMEOUT}]")
+
+    @field_validator("params")
+    @classmethod
+    def _bound_params(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value)) > _MAX_CHARS:
+            raise ValueError(f"params JSON exceeds {_MAX_CHARS} characters")
+        return value
 
 
 class ExecuteResult(BaseModel):

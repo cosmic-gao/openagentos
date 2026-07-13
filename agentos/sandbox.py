@@ -284,7 +284,6 @@ _RUNNERS: dict[str, tuple[str, str]] = {
 }
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_MAX_PARAMS_CHARS = 1024 * 1024
 
 
 def _command(
@@ -324,8 +323,6 @@ async def run(
 
     if params:
         params_json = json.dumps(params)
-        if len(params_json) > _MAX_PARAMS_CHARS:
-            raise ValueError(f"params JSON exceeds {_MAX_PARAMS_CHARS} characters")
         if interp == "python":
             code = f"params = __import__('json').loads({params_json!r})\n" + code
         else:

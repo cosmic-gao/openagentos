@@ -9,12 +9,32 @@ from __future__ import annotations
 from typing import Any
 
 from deepagents import HarnessProfile, SubAgent, create_deep_agent, register_harness_profile
+from deepagents.middleware.skills import SkillsMiddleware
 
 from agentos import middleware, model
 from agentos.config import HARNESS_SUFFIX, RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
 from agentos.tools import internet_search
 
 register_harness_profile("openai", HarnessProfile(system_prompt_suffix=HARNESS_SUFFIX))
+
+
+class _FreshSkills(SkillsMiddleware):
+    """每次 run 重新枚举 skills:剥掉 checkpoint 里缓存的清单键再交父类加载。
+
+    deepagents 默认把 skill 清单缓存进 thread state(before_agent 命中即跳过),导致已存在会话
+    看不到 skill 增删。这里让每次 run 都重新扫描挂载目录,使增删对老会话的下一次 run 也即时生效。
+    """
+
+    _CACHED = ("skills_metadata", "skills_load_errors")
+
+    def _fresh(self, state: dict) -> dict:
+        return {k: v for k, v in state.items() if k not in self._CACHED}
+
+    def before_agent(self, state, runtime, config):
+        return super().before_agent(self._fresh(state), runtime, config)
+
+    async def abefore_agent(self, state, runtime, config):
+        return await super().abefore_agent(self._fresh(state), runtime, config)
 
 
 def _research(llm: Any) -> SubAgent:
@@ -41,14 +61,14 @@ def build(
     memory: list[str] | None = None,
 ) -> Any:
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
+    skills_mw = [_FreshSkills(backend=backend, sources=skills)] if skills else []
     return create_deep_agent(
         model=llm,
         tools=tools,
         system_prompt=resolved.prompt or SYSTEM_PROMPT,
-        middleware=[*middleware.build(resolved, settings), *middleware.build_review(resolved, llm)],
+        middleware=[*skills_mw, *middleware.build(resolved, settings), *middleware.build_review(resolved, llm)],
         subagents=[_research(llm)],
         backend=backend,
-        skills=skills,
         memory=memory,
         interrupt_on=resolved.interrupt_on or None,
     )
