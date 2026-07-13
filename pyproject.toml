@@ -10,8 +10,9 @@ description = "Self-hosted AI Agent OS — DeepAgents on Aegra"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # Server / deployment layer (self-hosted Agent Protocol server).
+    # Server / deployment layer (self-hosted Agent Protocol server; CLI + API from the fork — see [tool.uv.sources]).
     "aegra-cli>=0.9.24,<0.10",
+    "aegra-api>=0.9.24,<0.10",
     # Agent harness (planning, filesystem, subagents, skills) — returns a LangGraph graph.
     "deepagents>=0.6.12,<0.7",
     # Chat model client for the OpenAI-compatible gateway (base_url override).
@@ -37,5 +38,8 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
+# aegra 从 fork 装:monorepo 两包各在 libs/ 子目录;uv source 只对直接依赖生效,故 aegra-api 也直列。
+aegra-cli = { git = "https://github.com/cosmic-gao/aegra.git", subdirectory = "libs/aegra-cli", branch = "main" }
+aegra-api = { git = "https://github.com/cosmic-gao/aegra.git", subdirectory = "libs/aegra-api", branch = "main" }
 # deepagents-opensandbox 尚未发布到 PyPI，从 git 安装。
 deepagents-opensandbox = { git = "https://github.com/cosmic-gao/opensandbox.git", branch = "main" }
