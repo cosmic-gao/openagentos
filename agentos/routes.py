@@ -5,18 +5,21 @@
 assets/workspace 会抛的窄类型(ValueError/OSError),勿注册 Exception/HTTPException——
 那会顶掉 Aegra 核心路由的 Agent Protocol 错误处理器。
 
+Aegra 以 custom_app_module 从文件加载本模块(不入 sys.modules),Pydantic 无法惰性解析
+非内置类型注解,故本文件用即时注解、勿加 `from __future__ import annotations`。
+
 归属鉴权:本路由默认信任上游可信网关按 assistant_id/thread_id 分派(见 auth.py),
 不复核资源归属;要在本服务内强制,按 user 校验或加 @auth.on 处理器。
 """
 
-from __future__ import annotations
-
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlparse
 
+from aegra_api.models.errors import BAD_REQUEST, UNAVAILABLE
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentos import assets, sandbox, workspace
 from agentos.config import get_settings, safe_segment
@@ -82,31 +85,52 @@ def download(thread_id: str, rel: str) -> FileResponse:
     return FileResponse(target, filename=target.name)
 
 
+_MAX_CHARS = 1024 * 1024
+_MAX_ITEMS = 256
+_MAX_ITEM_CHARS = 64 * 1024
+_MAX_TIMEOUT = 600
+
+_Item = Annotated[str, Field(max_length=_MAX_ITEM_CHARS)]
+
+
 class ExecuteBody(BaseModel):
-    code: str
-    language: str = "python"
-    timeout: int | None = None
+    code: str = Field(..., min_length=1, max_length=_MAX_CHARS, description="要执行的源码(单文件)")
+    language: str = Field("python", description="解释器:python | bash | sh")
+    args: list[_Item] = Field(default_factory=list, max_length=_MAX_ITEMS, description="命令行参数 → python: sys.argv[1:];bash: $1..")
+    env: dict[str, _Item] = Field(default_factory=dict, max_length=_MAX_ITEMS, description="环境变量(名须匹配 [A-Za-z_][A-Za-z0-9_]*)")
+    stdin: str | None = Field(None, max_length=_MAX_CHARS, description="标准输入文本")
+    timeout: int = Field(30, ge=1, le=_MAX_TIMEOUT, description=f"超时秒数,范围 [1, {_MAX_TIMEOUT}]")
 
 
 class ExecuteResult(BaseModel):
-    output: str  # 按时间戳合并的 stdout + stderr
-    exit_code: int | None = None  # 0 为成功
-    truncated: bool = False
+    output: str = Field(..., description="按时间戳合并的 stdout + stderr")
+    exit_code: int | None = Field(None, description="进程退出码,0 为成功")
+    truncated: bool = Field(False, description="输出是否因后端上限被截断")
 
 
-@app.post("/sandboxes/execute", tags=["Sandbox"])
+@app.post("/sandboxes/execute", tags=["Sandbox"], responses={**BAD_REQUEST, **UNAVAILABLE})
 async def execute(body: ExecuteBody) -> ExecuteResult:
     """新建临时沙箱执行 code(默认 python)、完成即销毁——单次、无状态、无会话。
 
-    返回按时间戳合并的 stdout+stderr 与退出码。程序非零退出仍返回 200(结果在 exit_code /
-    output);语言不支持返回 400。
+    可选参数化:args 作命令行参数、env 注入环境变量、stdin 喂标准输入;三者皆经 shell 安全转义。
+    返回按时间戳合并的 stdout+stderr 与退出码;程序非零退出仍返回 200(结果在 exit_code / output)。
+    入参超限/越界 → 422,语言不支持/env 变量名非法 → 400,沙箱落盘失败 → 503(后二者为 Aegra 标准
+    {error, message, details})。
     """
-    result = await sandbox.run(
-        get_settings(),
-        body.code,
-        language=body.language,
-        timeout=body.timeout,
-    )
+    try:
+        result = await sandbox.run(
+            get_settings(),
+            body.code,
+            language=body.language,
+            args=body.args,
+            env=body.env,
+            stdin=body.stdin,
+            timeout=body.timeout,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ExecuteResult(output=result.output, exit_code=result.exit_code, truncated=result.truncated)
 
 

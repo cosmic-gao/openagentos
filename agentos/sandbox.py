@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import time
 from collections import OrderedDict
@@ -275,13 +276,27 @@ def session(settings: Settings, assistant_id: str) -> SessionSandbox:
     return SessionSandbox(settings, assistant_id)
 
 
-# language → (临时文件后缀, 解释器命令);仅登记默认镜像 python:3.12 保证可用的解释器。
-# 需 node 等其他运行时,先把 AGENTOS_SANDBOX_IMAGE 换成含该运行时的镜像,再在此登记对应项。
 _RUNNERS: dict[str, tuple[str, str]] = {
     "python": ("py", "python"),
     "bash": ("sh", "bash"),
     "sh": ("sh", "sh"),
 }
+
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _command(
+    interp: str,
+    path: str,
+    args: list[str],
+    env: dict[str, str],
+    stdin_path: str | None,
+) -> str:
+    prefix = ["env", *(f"{name}={value}" for name, value in env.items())] if env else []
+    command = " ".join(shlex.quote(token) for token in (*prefix, interp, path, *args))
+    if stdin_path is not None:
+        command += f" < {shlex.quote(stdin_path)}"
+    return command
 
 
 async def run(
@@ -289,15 +304,19 @@ async def run(
     code: str,
     *,
     language: str = "python",
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    stdin: str | None = None,
     timeout: int | None = None,
 ) -> ExecuteResponse:
-    """新建临时沙箱执行 code、完成即销毁——单次、无状态、不挂持久卷。
-
-    语言不支持抛 ValueError,落盘失败抛 OSError;后端从不抛异常,程序失败以非零退出码回传。
-    """
+    """新建临时沙箱执行 code、完成即销毁——单次、无状态、不挂持久卷。"""
     runner = _RUNNERS.get(language.lower())
     if runner is None:
         raise ValueError(f"unsupported language {language!r}; expected one of {sorted(_RUNNERS)}")
+    env = env or {}
+    for name in env:
+        if not _ENV_NAME.match(name):
+            raise ValueError(f"invalid environment variable name {name!r}")
     ext, interp = runner
 
     backend = await AsyncOpenSandboxBackend.create(
@@ -309,9 +328,16 @@ async def run(
     )
     try:
         path = f"/tmp/{uuid4().hex}.{ext}"
-        staged = await backend.aupload_files([(path, code.encode())])
-        if staged and staged[0].error:
-            raise OSError(f"failed to stage code in sandbox: {staged[0].error}")
-        return await backend.aexecute(f"{interp} {shlex.quote(path)}", timeout=timeout)
+        blobs = [(path, code.encode())]
+        stdin_path = None
+        if stdin is not None:
+            stdin_path = f"/tmp/{uuid4().hex}.stdin"
+            blobs.append((stdin_path, stdin.encode()))
+        staged = await backend.aupload_files(blobs)
+        failed = next((s for s in staged if s.error), None)
+        if failed is not None:
+            raise OSError(f"failed to stage {failed.path} in sandbox: {failed.error}")
+        command = _command(interp, path, args or [], env, stdin_path)
+        return await backend.aexecute(command, timeout=timeout)
     finally:
         await backend.aclose()
