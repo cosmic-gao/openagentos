@@ -13,7 +13,7 @@ Aegra 以 custom_app_module 从文件加载本模块(不入 sys.modules),Pydanti
 """
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 from aegra_api.models.errors import BAD_REQUEST, UNAVAILABLE
@@ -99,6 +99,7 @@ class ExecuteBody(BaseModel):
     args: list[_Item] = Field(default_factory=list, max_length=_MAX_ITEMS, description="命令行参数 → python: sys.argv[1:];bash: $1..")
     env: dict[str, _Item] = Field(default_factory=dict, max_length=_MAX_ITEMS, description="环境变量(名须匹配 [A-Za-z_][A-Za-z0-9_]*)")
     stdin: str | None = Field(None, max_length=_MAX_CHARS, description="标准输入文本")
+    params: dict[str, Any] = Field(default_factory=dict, description="参数对象:python 里为变量 params;bash/sh 经 $PARAMS(JSON)")
     timeout: int = Field(30, ge=1, le=_MAX_TIMEOUT, description=f"超时秒数,范围 [1, {_MAX_TIMEOUT}]")
 
 
@@ -112,7 +113,8 @@ class ExecuteResult(BaseModel):
 async def execute(body: ExecuteBody) -> ExecuteResult:
     """新建临时沙箱执行 code(默认 python)、完成即销毁——单次、无状态、无会话。
 
-    可选参数化:args 作命令行参数、env 注入环境变量、stdin 喂标准输入;三者皆经 shell 安全转义。
+    可选参数化:args 作命令行参数、env 注入环境变量、stdin 喂标准输入、params 传键值对对象
+    (python 里为变量 params,bash/sh 为 $PARAMS);均经 shell 安全转义。
     返回按时间戳合并的 stdout+stderr 与退出码;程序非零退出仍返回 200(结果在 exit_code / output)。
     入参超限/越界 → 422,语言不支持/env 变量名非法 → 400,沙箱落盘失败 → 503(后二者为 Aegra 标准
     {error, message, details})。
@@ -125,6 +127,7 @@ async def execute(body: ExecuteBody) -> ExecuteResult:
             args=body.args,
             env=body.env,
             stdin=body.stdin,
+            params=body.params,
             timeout=body.timeout,
         )
     except ValueError as exc:

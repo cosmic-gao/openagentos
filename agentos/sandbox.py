@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import shlex
@@ -283,6 +284,7 @@ _RUNNERS: dict[str, tuple[str, str]] = {
 }
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_MAX_PARAMS_CHARS = 1024 * 1024
 
 
 def _command(
@@ -307,6 +309,7 @@ async def run(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     stdin: str | None = None,
+    params: dict[str, Any] | None = None,
     timeout: int | None = None,
 ) -> ExecuteResponse:
     """新建临时沙箱执行 code、完成即销毁——单次、无状态、不挂持久卷。"""
@@ -318,6 +321,15 @@ async def run(
         if not _ENV_NAME.match(name):
             raise ValueError(f"invalid environment variable name {name!r}")
     ext, interp = runner
+
+    if params:
+        params_json = json.dumps(params)
+        if len(params_json) > _MAX_PARAMS_CHARS:
+            raise ValueError(f"params JSON exceeds {_MAX_PARAMS_CHARS} characters")
+        if interp == "python":
+            code = f"params = __import__('json').loads({params_json!r})\n" + code
+        else:
+            env = {**env, "PARAMS": params_json}
 
     backend = await AsyncOpenSandboxBackend.create(
         settings.sandbox_image,
