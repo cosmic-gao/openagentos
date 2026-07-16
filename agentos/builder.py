@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from deepagents import HarnessProfile, SubAgent, create_deep_agent, register_harness_profile
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 
 from agentos import middleware, model
 from agentos.config import HARNESS_SUFFIX, RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
@@ -27,13 +27,13 @@ class _FreshSkills(SkillsMiddleware):
 
     _CACHED = ("skills_metadata", "skills_load_errors")
 
-    def _fresh(self, state: dict) -> dict:
-        return {k: v for k, v in state.items() if k not in self._CACHED}
+    def _fresh(self, state: SkillsState) -> SkillsState:
+        return cast(SkillsState, {k: v for k, v in state.items() if k not in self._CACHED})
 
-    def before_agent(self, state, runtime, config):
+    def before_agent(self, state: SkillsState, runtime, config):
         return super().before_agent(self._fresh(state), runtime, config)
 
-    async def abefore_agent(self, state, runtime, config):
+    async def abefore_agent(self, state: SkillsState, runtime, config):
         return await super().abefore_agent(self._fresh(state), runtime, config)
 
 
@@ -61,12 +61,17 @@ def build(
     memory: list[str] | None = None,
 ) -> Any:
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
+    grader = (
+        model.build(model=resolved.review_model, base_url=resolved.base_url, api_key=resolved.api_key)
+        if resolved.review_model
+        else llm
+    )
     skills_mw = [_FreshSkills(backend=backend, sources=skills)] if skills else []
     return create_deep_agent(
         model=llm,
         tools=tools,
         system_prompt=resolved.prompt or SYSTEM_PROMPT,
-        middleware=[*skills_mw, *middleware.build(resolved, settings), *middleware.build_review(resolved, llm)],
+        middleware=[*skills_mw, *middleware.build(resolved, settings), *middleware.build_review(resolved, grader)],
         subagents=[_research(llm)],
         backend=backend,
         memory=memory,

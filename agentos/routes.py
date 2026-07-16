@@ -12,7 +12,9 @@ Aegra 以 custom_app_module 从文件加载本模块(不入 sys.modules),Pydanti
 不复核资源归属;要在本服务内强制,按 user 校验或加 @auth.on 处理器。
 """
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
@@ -22,12 +24,31 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from agentos import assets, sandbox, workspace
+from agentos import assets, sandbox, sweeper, workspace
 from agentos.config import get_settings, safe_segment
+
+@asynccontextmanager
+async def lifespan(_app):
+    """启动后台 sweeper 回收空闲会话目录,app 关闭时取消。aegra 的核心 lifespan 外层包裹本
+    lifespan(见 route_merger.merge_lifespans),故此处 DB/checkpointer 已完成初始化。"""
+    task = asyncio.create_task(sweeper.run(get_settings()))
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 
 # root_path 取自 public_url 的路径部分:反代挂子路径(如 /aegra)时,令 /docs、/redoc、openapi
 # 指向带前缀的 URL(反代须剥该前缀转发);与下载直链共用 AGENTOS_PUBLIC_URL 一个开关,独立部署留空。
-app = FastAPI(title="OpenAgentOS files", root_path=urlparse(get_settings().public_url).path.rstrip("/"))
+app = FastAPI(
+    title="OpenAgentOS files",
+    root_path=urlparse(get_settings().public_url).path.rstrip("/"),
+    lifespan=lifespan,
+)
 
 
 _STATUS: dict[type[Exception], int] = {

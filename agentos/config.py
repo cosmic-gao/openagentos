@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     sandbox_timeout: int | None = None
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
+    # 会话目录回收:sandbox/<tid>/ 空闲(无文件改动)超 retention 秒后由后台 sweeper 删除;<=0 关闭。
+    sandbox_retention: int = 604800
+    sandbox_sweep_interval: int = 3600
 
     memory_enabled: bool = True
 
@@ -128,6 +131,7 @@ class ReviewConfig(BaseModel):
 
     rubric: str | None = None
     max_iterations: int = 3
+    model: str | None = None  # grader 模型;缺省复用主模型
 
 
 class AgentConfig(BaseModel):
@@ -161,6 +165,7 @@ class ResolvedConfig:
     pii_strategy: PIIStrategy = "off"
     rubric: str | None = None
     review_max_iterations: int = 3
+    review_model: str | None = None
     excluded_tools: list[str] = field(default_factory=list)
     interrupt_on: dict[str, Any] = field(default_factory=dict)
 
@@ -196,6 +201,7 @@ def resolve(config: AgentConfig, settings: Settings) -> ResolvedConfig:
         pii_strategy=config.pii_strategy or settings.pii_strategy,
         rubric=config.review.rubric,
         review_max_iterations=config.review.max_iterations,
+        review_model=config.review.model,
         excluded_tools=excluded,
         interrupt_on={**ask, **(config.interrupt_on or {})},
     )

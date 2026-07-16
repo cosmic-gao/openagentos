@@ -1,4 +1,7 @@
-"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,sandbox/<tid>/{storage,tmp} 存会话沙箱文件。"""
+"""共享磁盘布局:.deepagent/<aid>/ 存助手资产,sandbox/<tid>/storage 存会话持久产物。
+
+沙箱 /tmp 不挂持久卷、落容器本地随箱销毁(scratch);storage 由 sweeper 按空闲时长回收。
+"""
 
 from __future__ import annotations
 
@@ -41,11 +44,6 @@ def mcp(settings: Settings, assistant_id: str) -> Path:
 def storage(settings: Settings, thread_id: str) -> Path:
     """沙箱持久文件区(挂到沙箱 /workspace);下载接口从此处取,只按 thread 分区。"""
     return root(settings) / SANDBOX / safe_segment(thread_id) / "storage"
-
-
-def tmp(settings: Settings, thread_id: str) -> Path:
-    """沙箱临时文件区(挂到沙箱 /tmp);只按 thread 分区。"""
-    return root(settings) / SANDBOX / safe_segment(thread_id) / "tmp"
 
 
 def under(settings: Settings, path: Path) -> str:

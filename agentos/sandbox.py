@@ -102,12 +102,11 @@ def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
 
 
 def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
+    """只挂持久卷:workspace(会话产物)+ skills(助手技能)。/tmp 不挂卷,落沙箱容器本地、随箱销毁。"""
     ws = workspace.under(settings, workspace.storage(settings, thread_id))
-    tmp = workspace.under(settings, workspace.tmp(settings, thread_id))
     sk = workspace.under(settings, workspace.skills(settings, assistant_id))
     return [
         _volume(settings, "workspace", workspace.WORKSPACE, ws),
-        _volume(settings, "tmp", "/tmp", tmp),
         _volume(settings, "skills", workspace.SKILLS, sk),
     ]
 
@@ -137,7 +136,6 @@ async def _discover(settings: Settings, metadata: dict[str, str]) -> Any | None:
 async def _open(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
     metadata = {"agentos.assistant": assistant_id, "agentos.thread": thread_id}
     workspace.storage(settings, thread_id).mkdir(parents=True, exist_ok=True)
-    workspace.tmp(settings, thread_id).mkdir(parents=True, exist_ok=True)
 
     existing = await _discover(settings, metadata)
     if existing is not None:
