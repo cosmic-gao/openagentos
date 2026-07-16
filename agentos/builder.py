@@ -61,10 +61,13 @@ def build(
     memory: list[str] | None = None,
 ) -> Any:
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
-    grader = (
-        model.build(model=resolved.review_model, base_url=resolved.base_url, api_key=resolved.api_key)
-        if resolved.review_model
-        else llm
+    # grader 独立构建并设超时/限重试:自审模型调用挂起或不可达时快速降级为 grader_error,不拖死主 run。
+    grader = model.build(
+        model=resolved.review_model or resolved.model,
+        base_url=resolved.base_url,
+        api_key=resolved.api_key,
+        timeout=60,
+        max_retries=1,
     )
     skills_mw = [_FreshSkills(backend=backend, sources=skills)] if skills else []
     return create_deep_agent(

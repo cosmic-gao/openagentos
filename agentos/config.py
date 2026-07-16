@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Any, Literal
 
 from langgraph.config import get_config
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PIIStrategy = Literal["off", "block", "redact", "mask", "hash"]
@@ -132,6 +132,12 @@ class ReviewConfig(BaseModel):
     rubric: str | None = None
     max_iterations: int = 3
     model: str | None = None  # grader 模型;缺省复用主模型
+
+    @field_validator("max_iterations")
+    @classmethod
+    def _clamp_iterations(cls, v: int) -> int:
+        # RubricMiddleware 硬性要求 [1,20],越界会 raise 使整图构建失败;夹取而非拒绝。
+        return min(20, max(1, v))
 
 
 class AgentConfig(BaseModel):

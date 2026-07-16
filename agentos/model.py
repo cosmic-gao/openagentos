@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 
-def build(*, model: str | None, base_url: str | None, api_key: str | None) -> BaseChatModel:
+def build(
+    *,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+) -> BaseChatModel:
     name = model or ""
+    extra: dict[str, Any] = {}
+    if timeout is not None:
+        extra["timeout"] = timeout
+    if max_retries is not None:
+        extra["max_retries"] = max_retries
     if name.startswith("anthropic:"):
         from langchain.chat_models import init_chat_model
 
@@ -19,7 +31,8 @@ def build(*, model: str | None, base_url: str | None, api_key: str | None) -> Ba
             model_provider="anthropic",
             base_url=base_url,
             api_key=api_key or "EMPTY",
+            **extra,
         )
     if name.startswith("openai:"):
         model = name.removeprefix("openai:")
-    return ChatOpenAI(model=cast(str, model), base_url=base_url, api_key=SecretStr(api_key or "EMPTY"))
+    return ChatOpenAI(model=cast(str, model), base_url=base_url, api_key=SecretStr(api_key or "EMPTY"), **extra)
