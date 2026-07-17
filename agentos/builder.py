@@ -11,15 +11,16 @@ from typing import Any, cast
 from deepagents import HarnessProfile, SubAgent, create_deep_agent, register_harness_profile
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 
-from agentos import middleware, model
-from agentos.config import HARNESS_SUFFIX, RESEARCH_PROMPT, SYSTEM_PROMPT, ResolvedConfig, Settings
+from agentos import middleware, model, review
+from agentos.config import ResolvedConfig, Settings
+from agentos.prompts import HARNESS_SUFFIX, RESEARCH_PROMPT, SYSTEM_PROMPT
 from agentos.tools import internet_search
 
 register_harness_profile("openai", HarnessProfile(system_prompt_suffix=HARNESS_SUFFIX))
 
 
 class _FreshSkills(SkillsMiddleware):
-    """每次 run 重新枚举 skills:剥掉 checkpoint 里缓存的清单键再交父类加载。
+    """每次 run 重新枚举 skills。
 
     deepagents 默认把 skill 清单缓存进 thread state(before_agent 命中即跳过),导致已存在会话
     看不到 skill 增删。这里让每次 run 都重新扫描挂载目录,使增删对老会话的下一次 run 也即时生效。
@@ -63,18 +64,20 @@ def build(
     llm = model.build(model=resolved.model, base_url=resolved.base_url, api_key=resolved.api_key)
     # grader 独立构建并设超时/限重试:自审模型调用挂起或不可达时快速降级为 grader_error,不拖死主 run。
     grader = model.build(
-        model=resolved.review_model or resolved.model,
+        model=resolved.review.model or resolved.model,
         base_url=resolved.base_url,
         api_key=resolved.api_key,
         timeout=60,
         max_retries=1,
     )
+    # LLM 意图路由:启用且有规则时复用 grader 模型(review.model,缺省主模型),不另开模型字段。
+    gate = grader if (resolved.review.rules and resolved.review.gate) else None
     skills_mw = [_FreshSkills(backend=backend, sources=skills)] if skills else []
     return create_deep_agent(
         model=llm,
         tools=tools,
         system_prompt=resolved.prompt or SYSTEM_PROMPT,
-        middleware=[*skills_mw, *middleware.build(resolved, settings), *middleware.build_review(resolved, grader)],
+        middleware=[*skills_mw, *middleware.build(resolved, settings), *review.build(resolved, grader, gate)],
         subagents=[_research(llm)],
         backend=backend,
         memory=memory,

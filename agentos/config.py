@@ -16,63 +16,6 @@ Permission = Literal["allow", "ask", "deny"]
 
 TOOL_ALIASES = {"bash": "execute", "read": "read_file", "write": "write_file", "edit": "edit_file"}
 
-SYSTEM_PROMPT = """\
-You are OpenAgentOS, a capable general-purpose agent working in a real,
-persistent environment. You plan, run code, edit files, use tools, and deliver
-finished work end to end — like a skilled engineer who owns the task.
-
-Operating principles:
-- Plan before acting. For any multi-step task, use `write_todos` to lay out the
-  steps, then work through them and keep the list current.
-- `/workspace` is persistent for the whole conversation and shared with your
-  sandbox — files you write there survive across messages and tool calls. Keep
-  durable work there; put scratch and intermediate files under `/tmp`.
-- You have a real shell via `execute`: run commands, install packages, and test
-  your work instead of guessing.
-- Reusable skills live under `/workspace/skills`; consult them before solving a
-  problem from scratch.
-- Delegate deep, self-contained research to the `research-agent` subagent via
-  the `task` tool — give it one precise, standalone question and build on its
-  synthesized answer; don't micromanage its steps.
-- When a file in `/workspace` is a deliverable for the user (report,
-  spreadsheet, image, archive, …), call `download_file` with its path and hand
-  the user the returned link. Never expose scratch or intermediate files.
-- Verify before claiming done: run it, read the output, confirm the result.
-  State assumptions explicitly and cite sources when you rely on web results.
-- Be concise and direct: lead with the answer or result, then the detail that
-  matters.
-"""
-
-RESEARCH_PROMPT = """\
-You are a meticulous research subagent.
-
-- Decompose the question into concrete sub-questions.
-- Use `internet_search` to gather several independent sources before concluding.
-- Cross-check claims and prefer primary or official sources over aggregators.
-- Save lengthy raw findings to the filesystem, then return a concise, well-
-  organized synthesis with inline source URLs. Do not pad the answer.
-"""
-
-HARNESS_SUFFIX = """\
-<use_parallel_tool_calls>
-If you intend to call multiple tools with no dependencies between them, make all
-the independent calls in parallel rather than sequentially — e.g. reading three
-files is three tool calls in one turn. Only sequence calls when a later one
-depends on an earlier result. Never use placeholders or guess missing parameters.
-</use_parallel_tool_calls>
-
-<investigate_before_answering>
-Never speculate about code or state you have not observed. If the user references
-a file, read it before answering; investigate relevant files, run the check, or
-search before making claims. Give grounded, hallucination-free answers.
-</investigate_before_answering>
-
-<tool_result_reflection>
-After receiving tool results, reflect on their quality and plan the best next
-step before proceeding, rather than reflexively continuing.
-</tool_result_reflection>
-"""
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -104,7 +47,7 @@ class Settings(BaseSettings):
     public_url: str = ""
 
     sandbox_image: str = "python:3.12"
-    sandbox_ttl: int = 1800
+    sandbox_ttl: int = 300
     sandbox_timeout: int | None = None
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
@@ -113,6 +56,11 @@ class Settings(BaseSettings):
     sandbox_sweep_interval: int = 3600
 
     memory_enabled: bool = True
+
+    # Langfuse score 上报凭据(复用 aegra 同一套 env;缺失则 score 静默禁用)。
+    langfuse_public_key: str | None = Field(default=None, validation_alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str | None = Field(default=None, validation_alias="LANGFUSE_SECRET_KEY")
+    langfuse_host: str | None = Field(default=None, validation_alias="LANGFUSE_BASE_URL")
 
     opensandbox_domain: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_DOMAIN")
     opensandbox_api_key: str | None = Field(default=None, validation_alias="OPEN_SANDBOX_API_KEY")
@@ -126,12 +74,25 @@ def get_settings() -> Settings:
     return Settings()
 
 
+class ReviewRule(BaseModel):
+    """一条审查规则:内容命中(triggers 正则 / LLM 路由归到 name)则用本 rubric 审。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    rubric: str
+    name: str = "default"
+    triggers: list[str] = Field(default_factory=list)  # 空=catch-all,总匹配
+    description: str = ""  # 供 LLM 路由匹配
+
+
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    rubric: str | None = None
+    rules: list[ReviewRule] = Field(default_factory=list)
     max_iterations: int = 3
-    model: str | None = None  # grader 模型;缺省复用主模型
+    model: str | None = None  # grader 评分 + gate 路由共用;缺省复用主模型
+    gate: bool = False
+    gate_prompt: str | None = None
 
     @field_validator("max_iterations")
     @classmethod
@@ -169,9 +130,7 @@ class ResolvedConfig:
     steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy = "off"
-    rubric: str | None = None
-    review_max_iterations: int = 3
-    review_model: str | None = None
+    review: ReviewConfig = field(default_factory=ReviewConfig)
     excluded_tools: list[str] = field(default_factory=list)
     interrupt_on: dict[str, Any] = field(default_factory=dict)
 
@@ -205,9 +164,7 @@ def resolve(config: AgentConfig, settings: Settings) -> ResolvedConfig:
         steps=config.steps,
         fallback_model=config.fallback_model or settings.fallback_model,
         pii_strategy=config.pii_strategy or settings.pii_strategy,
-        rubric=config.review.rubric,
-        review_max_iterations=config.review.max_iterations,
-        review_model=config.review.model,
+        review=config.review,
         excluded_tools=excluded,
         interrupt_on={**ask, **(config.interrupt_on or {})},
     )

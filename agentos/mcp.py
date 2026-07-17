@@ -64,7 +64,7 @@ def _normalize(servers: dict) -> dict:
 
 
 def parse(text: str | None) -> dict:
-    """解析 .mcp.json 文本,取出 mcpServers 段(容错,失败返回空);规整与安全过滤留给 tools() 载入前做,避免重复。"""
+    """取出 .mcp.json 的 mcpServers 段(容错,失败返回空);规整与过滤留给 tools(),避免重复。"""
     if not text:
         return {}
     try:
@@ -76,27 +76,28 @@ def parse(text: str | None) -> dict:
 
 
 async def tools(servers: dict) -> list:
-    """把 mcpServers 配置载入为 tools(无配置返回 [];按规整后内容缓存,同配置只连一次)。
+    """把 mcpServers 配置载入为 tools(无配置返回 [])。**按 server 粒度缓存、仅成功载入的才缓存**。
 
-    逐个 server 并发载入,每个套 _LOAD_TIMEOUT_S 硬超时;单个 server 超时/连接/握手失败降级为
-    warning 并跳过,不影响其余 server(否则:配错的 server 会卡死 initialize,而
-    MultiServerMCPClient.get_tools() 内部又是不带 return_exceptions 的 gather,一个坏 server 会拖垮整批)。
+    逐个 server 并发载入,各套 _LOAD_TIMEOUT_S 硬超时;单个 server 超时/连接/握手失败降级为 warning
+    并跳过,**且不写缓存**——故某 server 短暂不可达不会被永久负缓存,恢复后下次自动重试;好 server 命中
+    缓存不受坏 server 拖累(否则:一个坏 server 卡死 initialize 会拖垮整批,或把缺它的结果永久缓存)。
     """
     if not servers:
         return []
     normalized = _normalize(servers)
-    key = json.dumps(normalized, sort_keys=True, default=str)
-    cached = _cache.get(key)
-    if cached is not None:
-        return cached
+    if not normalized:
+        return []
 
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    client = MultiServerMCPClient(normalized)
-
-    async def _load(name: str) -> list:
+    async def _load(name: str, conf: dict) -> list:
+        key = json.dumps({name: conf}, sort_keys=True, default=str)
+        cached = _cache.get(key)
+        if cached is not None:
+            return cached
         try:
-            return await asyncio.wait_for(
+            client = MultiServerMCPClient({name: conf})
+            loaded = await asyncio.wait_for(
                 client.get_tools(server_name=name), timeout=_LOAD_TIMEOUT_S
             )
         except asyncio.TimeoutError:
@@ -106,12 +107,12 @@ async def tools(servers: dict) -> list:
                 name,
                 _LOAD_TIMEOUT_S,
             )
-            return []
+            return []  # 不写缓存:恢复后下次重试
         except Exception as exc:  # noqa: BLE001 - 任何 server 的连接/握手失败都不应拖垮其余
             logger.warning("Skipping MCP server %r after load failure: %s", name, exc)
             return []
+        _cache[key] = loaded  # 仅成功才缓存
+        return loaded
 
-    loaded = await asyncio.gather(*(_load(name) for name in normalized))
-    result = [tool for server_tools in loaded for tool in server_tools]
-    _cache[key] = result
-    return result
+    loaded = await asyncio.gather(*(_load(name, conf) for name, conf in normalized.items()))
+    return [tool for server_tools in loaded for tool in server_tools]

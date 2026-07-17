@@ -48,8 +48,6 @@ def relative(path: str) -> str:
 
 
 def build_download(settings: Settings):
-    """构造 download_file 工具(文件已在共享磁盘,直链下载)。"""
-
     def download_file(path: str) -> str:
         """Give the user a download link for a file in /workspace.
 

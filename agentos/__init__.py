@@ -7,8 +7,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agentos.config import (  # noqa: E402
-    RESEARCH_PROMPT,
-    SYSTEM_PROMPT,
     AgentConfig,
     ResolvedConfig,
     Settings,
@@ -18,6 +16,7 @@ from agentos.config import (  # noqa: E402
     resolve,
     safe_segment,
 )
+from agentos.prompts import RESEARCH_PROMPT, SYSTEM_PROMPT  # noqa: E402
 
 __all__ = [
     "RESEARCH_PROMPT",

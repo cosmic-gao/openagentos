@@ -16,7 +16,6 @@ def _servers(settings, assistant_id: str) -> dict:
 
 
 def _backend(settings, assistant_id: str) -> tuple[Any, list[str]]:
-    """每线程沙箱后端 + skills 目录。"""
     return sandbox.session(settings, assistant_id), [workspace.SKILLS]
 
 

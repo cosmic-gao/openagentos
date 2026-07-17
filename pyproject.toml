@@ -29,6 +29,7 @@ dependencies = [
     "deepagents-opensandbox",
     "opensandbox>=0.1.13",
     "langchain-anthropic>=1.0",
+    "langfuse>=3",
 ]
 
 [tool.uv]

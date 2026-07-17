@@ -13,7 +13,7 @@ from agentos import workspace
 
 @dataclass(frozen=True)
 class Entry:
-    """目录项:path 为相对 assistant 根的 posix 路径;目录的 size 记 0。"""
+    """path 为相对 assistant 根的 posix 路径;目录的 size 记 0。"""
 
     path: str
     is_dir: bool
@@ -39,10 +39,31 @@ def ls(base: Path, rel: str = "") -> list[Entry]:
 
 
 _SKIP_DIRS = {".git"}
+_MAX_UNPACK_BYTES = 256 * 1024 * 1024  # 解压总字节上限,防 zip bomb
+
+
+def _iter_files(top: Path):
+    """深度遍历产出文件,**不跟随符号链接**、跳过 VCS 目录。"""
+    if not top.is_dir():
+        return
+    stack = [top]
+    while stack:
+        try:
+            children = sorted(stack.pop().iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_symlink():  # 不跟随 symlink,防越界读
+                continue
+            if child.is_dir():
+                if child.name not in _SKIP_DIRS:
+                    stack.append(child)
+            elif child.is_file():
+                yield child
 
 
 def walk(base: Path, rel: str = "") -> list[Entry]:
-    """递归遍历子树返回全部 Entry(供前端一次性建树);跳过 .git 等 VCS 目录。"""
+    """递归子树返回全部 Entry(供前端一次性建树);跳过 VCS 目录与符号链接。"""
     root = _resolve(base, rel)
     if not root.exists():
         return []
@@ -50,12 +71,14 @@ def walk(base: Path, rel: str = "") -> list[Entry]:
     stack = [root]
     while stack:
         for child in sorted(stack.pop().iterdir()):
+            if child.is_symlink():  # 不跟随 symlink,防越界枚举外部文件名/大小
+                continue
             if child.is_dir():
                 if child.name in _SKIP_DIRS:
                     continue
                 out.append(Entry(_rel(base, child), True, 0))
                 stack.append(child)
-            else:
+            elif child.is_file():
                 out.append(Entry(_rel(base, child), False, child.stat().st_size))
     return out
 
@@ -72,41 +95,61 @@ def write(base: Path, rel: str, content: str) -> str:
 
 
 def save(base: Path, rel: str, data: bytes) -> str:
-    """写入二进制内容(上传用);父目录自动建,已存在则覆盖。"""
     target = _resolve(base, rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     return _rel(base, target)
 
 
+def put(base: Path, rel: str, data: bytes) -> tuple[str, bool]:
+    """upsert 写字节(PUT 语义);返回 (相对路径, 是否新建)。"""
+    target = _resolve(base, rel)
+    created = not target.exists()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return _rel(base, target), created
+
+
 def unpack(base: Path, rel: str, data: bytes) -> list[str]:
-    """把 zip 解压进 rel 目录(成员过 contained 防 zip-slip,兼容反斜杠路径)。返回写入的相对路径。"""
+    """把 zip 解压进 rel 目录(成员过 contained 防 zip-slip,兼容反斜杠路径)。返回写入的相对路径。
+
+    解压总量设上限防 zip bomb:先按头部声明的 file_size 预检,再按实际写入字节累计兜底(防声明撒谎)。
+    """
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
         raise ValueError(f"invalid zip: {exc}") from exc
     out: list[str] = []
     with archive as zf:
+        declared = sum(info.file_size for info in zf.infolist() if not info.is_dir())
+        if declared > _MAX_UNPACK_BYTES:
+            raise ValueError(f"zip expands to {declared} bytes, exceeds limit {_MAX_UNPACK_BYTES}")
+        written = 0
         for info in zf.infolist():
             if info.is_dir():
                 continue
             member = info.filename.replace("\\", "/")
             target = _resolve(base, f"{rel}/{member}")
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(zf.read(info))
+            payload = zf.read(info)
+            written += len(payload)
+            if written > _MAX_UNPACK_BYTES:
+                raise ValueError(f"zip expansion exceeds limit {_MAX_UNPACK_BYTES}")
+            target.write_bytes(payload)
             out.append(_rel(base, target))
     return out
 
 
 def pack(base: Path, rel: str = "") -> bytes:
-    """把 base/rel 目录打包成 zip 字节(供整目录下载);跳过 VCS 目录,目录不存在则空包。"""
+    """把 base/rel 目录打包成 zip 字节(供整目录下载);跳过 VCS 目录与符号链接,目录不存在则空包。
+
+    经 `_iter_files` 不跟随 symlink:否则沙箱内不可信代码在共享卷放 symlink,打包会读出 app 宿主任意文件。
+    """
     top = _resolve(base, rel)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for child in sorted(top.rglob("*")) if top.is_dir() else []:
-            arc = child.relative_to(top)
-            if child.is_file() and _SKIP_DIRS.isdisjoint(arc.parts):
-                zf.write(child, arc.as_posix())
+        for child in _iter_files(top):
+            zf.write(child, child.relative_to(top).as_posix())
     return buf.getvalue()
 
 

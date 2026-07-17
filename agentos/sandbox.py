@@ -41,6 +41,7 @@ _MAX_SLOTS = 256
 
 _transport: Any = None
 _manager: Any = None
+_manager_lock = asyncio.Lock()
 
 
 @dataclass
@@ -56,7 +57,7 @@ _slots: OrderedDict[tuple[str, str], _Slot] = OrderedDict()
 
 
 def _connection(settings: Settings) -> Any:
-    """连接配置;进程级惰性建共享 transport(须在事件循环内首建),SDK 视为用户所有故不关闭它。"""
+    """进程级惰性建共享 transport(须在事件循环内首建),SDK 视为用户所有故不关闭它。"""
     global _transport
     from opensandbox.config import ConnectionConfig
 
@@ -78,9 +79,11 @@ def _connection(settings: Settings) -> Any:
 async def _get_manager(settings: Settings) -> Any:
     global _manager
     if _manager is None:
-        from opensandbox.manager import SandboxManager
+        async with _manager_lock:  # 双检:并发冷启动只建一次 manager,否则各自 await 建多个、泄露 N-1 个
+            if _manager is None:
+                from opensandbox.manager import SandboxManager
 
-        _manager = await SandboxManager.create(connection_config=_connection(settings))
+                _manager = await SandboxManager.create(connection_config=_connection(settings))
     return _manager
 
 
@@ -112,7 +115,6 @@ def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]
 
 
 async def _discover(settings: Settings, metadata: dict[str, str]) -> Any | None:
-    """按 metadata 找 RUNNING/PAUSED 沙箱:PAUSED 恢复、RUNNING 连接,否则 None。"""
     from opensandbox.models.sandboxes import SandboxFilter, SandboxState
     from opensandbox.sandbox import Sandbox
 
@@ -190,7 +192,7 @@ async def _renew(settings: Settings, slot: _Slot) -> None:
 
 
 async def _acquire(settings: Settings, assistant_id: str, thread_id: str) -> AsyncOpenSandboxBackend:
-    """取或建句柄;同 key 并发只开箱一次(双检锁),建成后压回上限并按需续期。"""
+    """同 key 并发只开箱一次(双检锁)。"""
     key = (assistant_id, thread_id)
     slot = _slots.get(key)
     if slot is None:
@@ -217,7 +219,7 @@ async def _healthy(backend: AsyncOpenSandboxBackend) -> bool:
 
 
 def _failed(result: Any) -> bool:
-    """结果是否表征失败(后端从不抛异常,失败以结果对象回传)。"""
+    """结果是否为失败:后端从不抛异常,以结果对象回传失败。"""
     if isinstance(result, ExecuteResponse):
         return result.exit_code != 0
     if isinstance(result, ReadResult):
@@ -271,7 +273,6 @@ class SessionSandbox(BaseSandbox):
 
 
 def session(settings: Settings, assistant_id: str) -> SessionSandbox:
-    """按 (assistant, thread) 多路复用的每线程沙箱后端。"""
     return SessionSandbox(settings, assistant_id)
 
 
@@ -292,6 +293,7 @@ def _command(
     stdin_path: str | None,
 ) -> str:
     prefix = ["env", *(f"{name}={value}" for name, value in env.items())] if env else []
+    # shlex.quote 转义每个 token 防 shell 注入(env/args/路径均不可信)
     command = " ".join(shlex.quote(token) for token in (*prefix, interp, path, *args))
     if stdin_path is not None:
         command += f" < {shlex.quote(stdin_path)}"
@@ -314,12 +316,14 @@ async def run(
     if runner is None:
         raise ValueError(f"unsupported language {language!r}; expected one of {sorted(_RUNNERS)}")
     env = env or {}
+    # env 名拼进 `env NAME=value` 前缀,须为合法 shell 变量名
     for name in env:
         if not _ENV_NAME.match(name):
             raise ValueError(f"invalid environment variable name {name!r}")
     ext, interp = runner
 
     if params:
+        # json 序列化;python 侧用 repr 嵌成字符串字面量再 loads,防源码注入
         params_json = json.dumps(params)
         if interp == "python":
             code = f"params = __import__('json').loads({params_json!r})\n" + code

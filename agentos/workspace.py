@@ -47,7 +47,7 @@ def storage(settings: Settings, thread_id: str) -> Path:
 
 
 def under(settings: Settings, path: Path) -> str:
-    """path 相对 workspace 根的 posix 子路径(沙箱挂载 subPath 用)。"""
+    """沙箱挂载 subPath 用。"""
     return path.relative_to(root(settings)).as_posix()
 
 

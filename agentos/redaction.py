@@ -1,14 +1,12 @@
-"""密钥/凭据兜底脱敏:把 API key、token、私钥等从 agent 的输入/输出/工具结果里 redact 掉。
+"""密钥/凭据兜底脱敏:从 agent 的输入/输出/工具结果里 redact 掉 API key、token、私钥等。
 
-定位是**纵深防御的最后一道**,不是第一道——第一道仍是别把密钥放到 agent 读得到的位置
-(工作区 / 提示词 / 技能目录 / .mcp.json)。这里基于 LangChain 官方 `PIIMiddleware` 的自定义
-detector 扩展点落地,不引入重型依赖;规则取自通行开源密钥扫描器(gitleaks / detect-secrets /
-trufflehog)的高可信、低误报模式。正则是 best-effort,挡不住所有形态。
+**纵深防御的最后一道**——第一道仍是别把密钥放到 agent 读得到的位置(工作区 / 提示词 /
+技能目录 / .mcp.json)。基于 LangChain `PIIMiddleware` 的 callable detector 扩展点落地,
+规则取自 gitleaks / detect-secrets / trufflehog 的高可信、低误报模式;正则 best-effort,挡不住所有形态。
 
-实现要点:官方 `detector` 传正则字符串时只能 redact 整个 match,故这里用 callable detector 返回
-精确 span——对「整段即密钥」的规则取 group 0,对「只想 redact 值/凭据段」的规则(URL 里的密码、
-key=value 的右值)取指定捕获组,保留上下文。callable 返回的每个 match 自带 type,故一个中间件
-一次扫描即可覆盖多种密钥类型(middleware 不按 pii_type 过滤 detector 的输出)。
+官方 detector 传正则串时只能 redact 整个 match,故用 callable 返回精确 span:对「整段即密钥」
+取 group 0,对「只 redact 值/凭据段」的规则(URL 密码、key=value 右值)取捕获组、保留上下文。
+callable 的每个 match 自带 type,故一个中间件一次扫描即覆盖多种密钥类型。
 """
 
 from __future__ import annotations
@@ -77,7 +75,6 @@ def _detect_secrets(content: str) -> list[PIIMatch]:
 def secret_middleware(strategy: Strategy = "redact") -> PIIMiddleware:
     """覆盖输入/输出/工具结果的密钥脱敏中间件(单次扫描、多类型占位)。
 
-    strategy:redact(占位符)/ mask(留尾 4 位)/ hash(确定性摘要)/ block(检到即抛错中断 run)。
     apply_to_output=True 会额外装流式 transformer,在途 redact 模型回复,不必等整条消息落定。
     """
     return PIIMiddleware(
