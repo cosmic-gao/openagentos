@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PIIStrategy = Literal["off", "block", "redact", "mask", "hash"]
+RedactionStrategy = Literal["block", "redact", "mask", "hash"]  # PIIStrategy 去掉 off:实际会脱敏的策略
 Permission = Literal["allow", "ask", "deny"]
 
 TOOL_ALIASES = {"bash": "execute", "read": "read_file", "write": "write_file", "edit": "edit_file"}
@@ -29,6 +30,9 @@ class Settings(BaseSettings):
     model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
     base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    # 网关自定义模型名 langchain 认不出上下文窗口,summarization 会退回固定 170k 阈值、与真实窗口脱钩;
+    # 显式设窗口(tokens)后改按"窗口 85%"触发,撞限前优雅压缩。缺省 None=沿用 langchain 按模型名推断。
+    context_window: int | None = None
 
     model_max_retries: int = 2
     tool_max_retries: int = 2
@@ -37,7 +41,7 @@ class Settings(BaseSettings):
     pii_strategy: PIIStrategy = "off"
     # 密钥/凭据兜底脱敏(纵深防御最后一道,独立于 pii_strategy,默认开)。
     secret_redaction: bool = True
-    secret_redaction_strategy: Literal["redact", "mask", "hash", "block"] = "redact"
+    secret_redaction_strategy: RedactionStrategy = "redact"
     context_editing: bool = True
     tool_selector_max: int | None = None
 
@@ -112,6 +116,7 @@ class AgentConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     assistant_id: str | None = None
+    context_window: int | None = None
     steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy | None = None
@@ -127,6 +132,7 @@ class ResolvedConfig:
     base_url: str | None
     api_key: str | None
     prompt: str | None
+    context_window: int | None = None
     steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy = "off"
@@ -161,6 +167,7 @@ def resolve(config: AgentConfig, settings: Settings) -> ResolvedConfig:
         base_url=config.base_url or settings.base_url,
         api_key=config.api_key or settings.api_key,
         prompt=config.prompt,
+        context_window=config.context_window or settings.context_window,
         steps=config.steps,
         fallback_model=config.fallback_model or settings.fallback_model,
         pii_strategy=config.pii_strategy or settings.pii_strategy,

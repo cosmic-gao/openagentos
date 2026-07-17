@@ -1,4 +1,4 @@
-"""密钥/凭据兜底脱敏:从 agent 的输入/输出/工具结果里 redact 掉 API key、token、私钥等。
+"""密钥/凭据检测器:扫出 API key、token、私钥等的精确 span,供 middleware 组装成脱敏中间件。
 
 **纵深防御的最后一道**——第一道仍是别把密钥放到 agent 读得到的位置(工作区 / 提示词 /
 技能目录 / .mcp.json)。基于 LangChain `PIIMiddleware` 的 callable detector 扩展点落地,
@@ -7,17 +7,13 @@
 官方 detector 传正则串时只能 redact 整个 match,故用 callable 返回精确 span:对「整段即密钥」
 取 group 0,对「只 redact 值/凭据段」的规则(URL 密码、key=value 右值)取捕获组、保留上下文。
 callable 的每个 match 自带 type,故一个中间件一次扫描即覆盖多种密钥类型。
+中间件装配(输入/输出/工具结果三侧、输出侧不硬失败)在 [middleware.py](middleware.py)。
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Literal
-
-from langchain.agents.middleware import PIIMiddleware
-
-# 与 PIIMiddleware 的 strategy 取值对齐:redact 占位 / mask 留尾 / hash 摘要 / block 检到即抛错中断。
-Strategy = Literal["block", "redact", "mask", "hash"]
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # 仅类型引用:官方 detector 契约用的 PIIMatch(TypedDict);运行时返回等价 dict 字面量,无需导入。
@@ -32,7 +28,8 @@ _RULES: list[_Rule] = [
     ("gcp_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), 0),
     ("google_oauth", re.compile(r"\bya29\.[0-9A-Za-z_\-]+"), 0),
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}"), 0),
-    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}"), 0),
+    # (?!ant-):不吞 anthropic 的 sk-ant-…,让上一条 anthropic_key 认领(脱敏都生效,仅 type 标签更准)。
+    ("openai_key", re.compile(r"\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_\-]{20,}"), 0),
     ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"), 0),
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), 0),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}"), 0),
@@ -60,7 +57,7 @@ def _dedupe(matches: list[PIIMatch]) -> list[PIIMatch]:
     return kept
 
 
-def _detect_secrets(content: str) -> list[PIIMatch]:
+def detect_secrets(content: str) -> list[PIIMatch]:
     """扫描文本返回命中的密钥 span(PIIMiddleware 的 callable detector 契约:dict 需含 start/end/value/type)。"""
     found: list[PIIMatch] = []
     for pii_type, pattern, group in _RULES:
@@ -70,18 +67,3 @@ def _detect_secrets(content: str) -> list[PIIMatch]:
                 continue
             found.append({"type": pii_type, "value": m.group(group), "start": start, "end": end})
     return _dedupe(found)
-
-
-def secret_middleware(strategy: Strategy = "redact") -> PIIMiddleware:
-    """覆盖输入/输出/工具结果的密钥脱敏中间件(单次扫描、多类型占位)。
-
-    apply_to_output=True 会额外装流式 transformer,在途 redact 模型回复,不必等整条消息落定。
-    """
-    return PIIMiddleware(
-        "secret",
-        detector=_detect_secrets,
-        strategy=strategy,
-        apply_to_input=True,
-        apply_to_output=True,
-        apply_to_tool_results=True,
-    )

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ async def tools(servers: dict) -> list:
 
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    async def _load(name: str, conf: dict) -> list:
+    async def _load(name: str, conf: Any) -> list:
         key = json.dumps({name: conf}, sort_keys=True, default=str)
         cached = _cache.get(key)
         if cached is not None:

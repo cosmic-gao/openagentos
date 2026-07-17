@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 from deepagents.middleware.rubric import (
     GraderResponse,
     RUBRIC_GRADER_MESSAGE_SOURCE,
+    RubricEvaluation,
     RubricMiddleware,
     RubricState,
 )
@@ -263,7 +264,7 @@ def _push_verdict(update: dict[str, Any] | None, state: Any) -> None:
         pass
 
 
-def _on_evaluation(evaluation: dict[str, Any]) -> None:
+def _on_evaluation(evaluation: RubricEvaluation) -> None:
     """rubric 裁决:落结构化日志(run_id/thread_id 由 aegra structlog 自动附带)+ 上报 Langfuse score。
 
     failed/max_iterations_reached/grader_error 这类"没过审却收尾"用 warning,便于在追踪后端过滤告警。

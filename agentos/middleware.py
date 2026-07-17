@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware import ModelRequest, ModelResponse
 
-    from agentos.config import ResolvedConfig, Settings
+    from agentos.config import RedactionStrategy, ResolvedConfig, Settings
 
 _PII_TYPES = ("email", "credit_card", "ip", "mac_address")
 
@@ -60,6 +60,32 @@ class ToolFilter(AgentMiddleware[Any, Any, Any]):
         return await handler(self._apply(request))
 
 
+class _OutputPII(PIIMiddleware):
+    """输出侧脱敏中间件——仅为与同类型输入侧实例区分 name(PIIMiddleware.name 含类名,create_agent
+    要求中间件 name 唯一,否则同 pii_type 的两个实例撞名);行为与父类完全一致。"""
+
+
+def _redactors(pii_type: str, strategy: RedactionStrategy, **kwargs: Any) -> list[AgentMiddleware[Any, Any, Any]]:
+    """一个 PII/密钥类型的脱敏中间件:输入/工具结果按 strategy(block 则拒收可疑入站内容),
+    但**输出侧永不 block**——block 降级为 redact:出站内容只脱敏、绝不中断 run(输出侧 block 与
+    redact 防泄漏效果相同,唯 block 会硬失败)。非 block 策略下三侧共用一个中间件。"""
+    if strategy != "block":
+        return [
+            PIIMiddleware(
+                pii_type,
+                strategy=strategy,
+                apply_to_input=True,
+                apply_to_output=True,
+                apply_to_tool_results=True,
+                **kwargs,
+            )
+        ]
+    return [
+        PIIMiddleware(pii_type, strategy="block", apply_to_input=True, apply_to_tool_results=True, **kwargs),
+        _OutputPII(pii_type, strategy="redact", apply_to_output=True, **kwargs),
+    ]
+
+
 def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[Any, Any, Any]]:
     stack: list[AgentMiddleware[Any, Any, Any]] = []
     if settings.model_max_retries > 0:
@@ -74,7 +100,10 @@ def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[
         )
     if resolved.fallback_model:
         fallback = model.build(
-            model=resolved.fallback_model, base_url=resolved.base_url, api_key=resolved.api_key
+            model=resolved.fallback_model,
+            base_url=resolved.base_url,
+            api_key=resolved.api_key,
+            context_window=resolved.context_window,
         )
         stack.append(ModelFallbackMiddleware(fallback))
     if settings.context_editing:
@@ -83,13 +112,11 @@ def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[
         stack.append(LLMToolSelectorMiddleware(max_tools=settings.tool_selector_max))
     strategy = resolved.pii_strategy
     if strategy != "off":
-        stack.extend(
-            PIIMiddleware(kind, strategy=strategy, apply_to_input=True, apply_to_tool_results=True)
-            for kind in _PII_TYPES
-        )
-    # 密钥兜底:独立于 pii_strategy,默认开。
+        for kind in _PII_TYPES:
+            stack.extend(_redactors(kind, strategy))
+    # 密钥兜底:独立于 pii_strategy,默认开;同样输出侧不硬失败。
     if settings.secret_redaction:
-        stack.append(redaction.secret_middleware(settings.secret_redaction_strategy))
+        stack.extend(_redactors("secret", settings.secret_redaction_strategy, detector=redaction.detect_secrets))
     if resolved.excluded_tools:
         stack.append(ToolFilter(set(resolved.excluded_tools)))
     return stack

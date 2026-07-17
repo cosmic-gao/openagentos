@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langgraph_sdk.runtime import ServerRuntime
@@ -48,11 +49,14 @@ async def make_graph(config: dict, runtime: ServerRuntime) -> Any:
     base, skills = _backend(settings, assistant_id)
     backend, memory = _memory(settings, assistant_id, base)
 
-    return builder.build(
+    # create_deep_agent 全图编译是 ~60ms 纯 CPU:挪出事件循环,避免高并发下各 run 建图相互串行阻塞。
+    return await asyncio.to_thread(
+        builder.build,
         resolved=resolved,
         settings=settings,
         backend=backend,
         tools=agent_tools,
         skills=skills,
+        skills_dir=workspace.skills(settings, assistant_id),
         memory=memory,
     )

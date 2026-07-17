@@ -106,11 +106,11 @@ def _volume(settings: Settings, name: str, mount: str, sub: str) -> Any:
 
 def _volumes(settings: Settings, assistant_id: str, thread_id: str) -> list[Any]:
     """只挂持久卷:workspace(会话产物)+ skills(助手技能)。/tmp 不挂卷,落沙箱容器本地、随箱销毁。"""
-    ws = workspace.under(settings, workspace.storage(settings, thread_id))
-    sk = workspace.under(settings, workspace.skills(settings, assistant_id))
+    storage = workspace.under(settings, workspace.storage(settings, thread_id))
+    skills = workspace.under(settings, workspace.skills(settings, assistant_id))
     return [
-        _volume(settings, "workspace", workspace.WORKSPACE, ws),
-        _volume(settings, "skills", workspace.SKILLS, sk),
+        _volume(settings, "workspace", workspace.WORKSPACE, storage),
+        _volume(settings, "skills", workspace.SKILLS, skills),
     ]
 
 
