@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # 网关自定义模型名 langchain 认不出上下文窗口,summarization 会退回固定 170k 阈值、与真实窗口脱钩;
     # 显式设窗口(tokens)后改按"窗口 85%"触发,撞限前优雅压缩。缺省 None=沿用 langchain 按模型名推断。
     context_window: int | None = None
+    stream_usage: bool = True
 
     model_max_retries: int = 2
     tool_max_retries: int = 2
@@ -117,6 +118,7 @@ class AgentConfig(BaseModel):
     base_url: str | None = None
     assistant_id: str | None = None
     context_window: int | None = None
+    stream_usage: bool | None = None
     steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy | None = None
@@ -133,6 +135,7 @@ class ResolvedConfig:
     api_key: str | None
     prompt: str | None
     context_window: int | None = None
+    stream_usage: bool = True
     steps: int | None = None
     fallback_model: str | None = None
     pii_strategy: PIIStrategy = "off"
@@ -168,6 +171,7 @@ def resolve(config: AgentConfig, settings: Settings) -> ResolvedConfig:
         api_key=config.api_key or settings.api_key,
         prompt=config.prompt,
         context_window=config.context_window or settings.context_window,
+        stream_usage=settings.stream_usage if config.stream_usage is None else config.stream_usage,
         steps=config.steps,
         fallback_model=config.fallback_model or settings.fallback_model,
         pii_strategy=config.pii_strategy or settings.pii_strategy,

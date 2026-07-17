@@ -104,6 +104,7 @@ def build(resolved: ResolvedConfig, settings: Settings) -> list[AgentMiddleware[
             base_url=resolved.base_url,
             api_key=resolved.api_key,
             context_window=resolved.context_window,
+            stream_usage=resolved.stream_usage,
         )
         stack.append(ModelFallbackMiddleware(fallback))
     if settings.context_editing:

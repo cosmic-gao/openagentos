@@ -170,6 +170,7 @@ store）。见 <https://docs.aegra.dev/reference/configuration>。
     "base_url": "https://your-gateway/v1",
     "assistant_id": "finance-bot",
     "context_window": 131072,
+    "stream_usage": true,
     "interrupt_on": { "execute": true },
     "steps": 40,
     "fallback_model": "gpt-4o-mini",
@@ -179,9 +180,10 @@ store）。见 <https://docs.aegra.dev/reference/configuration>。
 }
 ```
 
-model/api_key/base_url/context_window 缺项回退全局 env（`OPENAI_*` / `AGENTOS_CONTEXT_WINDOW`）；
-prompt 缺省回退内置 `SYSTEM_PROMPT`。`context_window` 供网关自定义模型名声明真实上下文窗口，使自动摘要
-压缩按"窗口 85%"提前触发（缺省则 langchain 按模型名推断，认不出时退回固定 170k 阈值）。
+model/api_key/base_url/context_window/stream_usage 缺项回退全局 env（`OPENAI_*` /
+`AGENTOS_CONTEXT_WINDOW` / `AGENTOS_STREAM_USAGE`）；prompt 缺省回退内置 `SYSTEM_PROMPT`。`context_window`
+供网关自定义模型名声明真实上下文窗口，使自动摘要压缩按"窗口 85%"提前触发（缺省则 langchain 按模型名推断，
+认不出时退回固定 170k 阈值）；`stream_usage` 使流式响应回传 token usage（Langfuse 成本统计所需）。
 MCP 与 skills 不在 config 里——放共享磁盘 `workspace/.deepagent/<assistant_id>/`
 （见「定制 agent」）。
 
@@ -217,6 +219,7 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | ------------------- | --------------------------------------------------- |
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | 全局网关兜底（每助手可在 assistant config 覆盖） |
 | `AGENTOS_CONTEXT_WINDOW` | 模型上下文窗口 tokens；网关自定义模型名须显式设置，否则自动摘要压缩退回固定 170k 阈值（每助手可覆盖 `context_window`） |
+| `AGENTOS_STREAM_USAGE` | 默认 `true`；流式请求带 `stream_options.include_usage`，使流式响应回传 token usage（Langfuse 成本统计所需）。个别严格网关拒绝该参数则设 `false`（每助手可覆盖 `stream_usage`） |
 | `TAVILY_API_KEY`    | 可选，为 `research-agent` 开启联网搜索 |
 | `AGENTOS_WORKSPACE` | 共享磁盘根（app 视角，默认 `workspace`） |
 | `AGENTOS_WORKSPACE_HOST` | 沙箱 bind mount 用宿主绝对路径（缺省=上者绝对路径） |

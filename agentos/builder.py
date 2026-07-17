@@ -101,6 +101,7 @@ def build(
         base_url=resolved.base_url,
         api_key=resolved.api_key,
         context_window=resolved.context_window,
+        stream_usage=resolved.stream_usage,
     )
     # grader 独立构建并设超时/限重试:自审模型调用挂起或不可达时快速降级为 grader_error,不拖死主 run。
     grader = model.build(
@@ -108,6 +109,7 @@ def build(
         base_url=resolved.base_url,
         api_key=resolved.api_key,
         context_window=resolved.context_window,
+        stream_usage=resolved.stream_usage,
         timeout=60,
         max_retries=1,
     )
