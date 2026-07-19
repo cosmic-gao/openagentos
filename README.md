@@ -23,7 +23,6 @@ Aegra 服务器 (FastAPI, :2026)
    • graph "agentos"  (agentos/graph.py)
        └─ create_deep_agent(..., backend=…)      ← DeepAgents harness
             • 规划 write_todos + 文件系统 + skills
-            • research-agent 子代理
             • backend：每线程临时沙箱（execute；/workspace 挂共享磁盘）
    │                  │                     │
    ▼                  ▼                     ▼
@@ -33,16 +32,15 @@ PostgreSQL        OpenAI 兼容网关          OpenSandbox 容器服务
 
 ## 共享磁盘布局
 
-一块盘（host bind 或 K8s PVC）同时挂给 app 与所有沙箱，是全部持久文件的唯一真源：
+一块盘（host bind 或 K8s PVC）挂给 app 与所有沙箱，只存**助手级配置**（skills / MCP）；会话文件不落盘：
 
 ```
 workspace/                          ← AGENTOS_WORKSPACE
-├── .deepagent/<assistant_id>/      ← 助手资产（app 管理）
-│   ├── skills/                     → 挂到该助手每个沙箱的 /workspace/skills
-│   └── .mcp.json                   → graph 工厂读取，载入 MCP 工具
-└── sandbox/<thread_id>/            ← 会话文件（只按 thread 分区，不绑 assistant）
-    └── storage/                    → 挂到沙箱 /workspace（持久产物；空闲超 RETENTION 由 sweeper 回收）
-# 沙箱 /tmp 为 scratch：不挂持久卷、落容器本地，随沙箱销毁自动清空
+└── .deepagent/<assistant_id>/      ← 助手资产（app 管理，按 assistant 隔离）
+    ├── skills/                     → 只读挂到该助手每个沙箱的 /workspace/skills
+    └── .mcp.json                   → graph 工厂读取，载入 MCP 工具
+# 会话 /workspace 落沙箱容器本地、随箱销毁（ephemeral，与 LGP 一致）——
+# 要长期留存写 /memories/（→ Store/Postgres）；要交付给用户用 download_file（拷入 Store，见下）。
 ```
 
 ## 沙箱与隔离
@@ -54,10 +52,11 @@ workspace/                          ← AGENTOS_WORKSPACE
   `deepagents-opensandbox` 提供。生命周期归服务端：创建时带
   `timeout=AGENTOS_SANDBOX_TTL`，到期自动销毁；进程内只缓存句柄，操作时按 metadata
   发现已有沙箱（RUNNING 连接 / PAUSED 恢复），失联则重建并重试一次
-  （[agentos/sandbox.py](agentos/sandbox.py)）。**持久化在共享磁盘上，沙箱本身可弃**——
-  重建后按同一 subPath 重挂，线程文件无损。
-- **每助手隔离靠磁盘 subPath** — 沙箱挂两个卷：`<aid>/<tid>` → `/workspace`（线程私有），
-  `.deepagent/<aid>/skills` → `/workspace/skills`（助手级，跨线程共享）。助手间互不可见。
+  （[agentos/sandbox/session.py](agentos/sandbox/session.py)）。**会话 `/workspace` 是 ephemeral**——
+  沙箱销毁/重建后为全新空目录（与 LGP 一致）；要持久的数据走 `/memories/`（Store），要交付的文件用
+  `download_file`（拷入 Store）。
+- **每助手隔离** — 沙箱只挂 skills 一个卷：`.deepagent/<aid>/skills` → `/workspace/skills`
+  （助手级、跨线程共享的只读配置）；会话 `/workspace` 是容器本地、按 (assistant, thread) 独立。助手间互不可见。
 
 **按 assistant 构图（graph 工厂）**：aegra.json 指向异步工厂
 [`make_graph(config, runtime)`](agentos/graph.py)，Aegra 每次请求用该 assistant 的 `config`
@@ -118,25 +117,35 @@ openagentos/
 ├── pyproject.toml          # uv 项目 + 锁定依赖
 ├── .python-version         # 3.12
 ├── .env.example            # 网关 + 可选 key 模板
-└── agentos/                # agent 本体（Python 包）
-    ├── __init__.py         # 加载 .env + 公共 API 导出
-    ├── config.py           # Settings(env) + AgentConfig(configurable) + resolve
-    ├── prompts.py          # 系统提示词常量（主 agent / research 子代理 / harness 后缀）
-    ├── workspace.py        # 共享磁盘布局（.deepagent/<aid>/ 与 sandbox/<tid>/）
-    ├── model.py            # OpenAI 兼容网关 chat model 工厂（model.build）
-    ├── mcp.py              # 从 .mcp.json 载入 MCP 工具（parse / tools）
-    ├── tools.py            # internet_search（Tavily）+ download_file（共享磁盘直链）
-    ├── sandbox.py          # 每线程临时沙箱：发现/恢复/重建（SessionSandbox）
-    ├── middleware.py       # 官方中间件栈装配（重试/上限/回退/裁剪/PII/密钥脱敏）+ ToolFilter
-    ├── review.py           # rubric 自审子系统（意图路由 + 迭代评分 + 裁决 UI + score 上报）
-    ├── redaction.py        # 密钥/凭据兜底脱敏（PIIMiddleware callable detector）
-    ├── scoring.py          # Langfuse score 上报（rubric 裁决 / 用户反馈 → trace）
-    ├── builder.py          # 组装：model + tools + subagents + 中间件 → create_deep_agent
-    ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
-    ├── assets.py           # .deepagent/<aid>/ 资产文件的增删改移（限定目录内）
-    ├── sweeper.py          # 后台回收空闲超期会话目录 + 对应 checkpoint 行
-    ├── auth.py             # 自定义鉴权：从 x-tenant-id / x-user-id 头解析身份
-    └── routes.py           # Aegra 自定义 HTTP：线程文件下载 + 单次沙箱执行 code + /assistants/{aid} 资产管理
+├── agentos/                # agent 本体（Python 包）
+│   ├── __init__.py         # 加载 .env + 公共 API 导出
+│   ├── config.py           # Settings(env) + AgentConfig(configurable) + resolve
+│   ├── prompts.py          # 系统提示词常量（主 agent 默认提示 / harness 后缀）
+│   ├── workspace.py        # 共享磁盘布局（.deepagent/<aid>/ 助手配置）
+│   ├── model.py            # OpenAI 兼容网关 chat model 工厂（model.build）
+│   ├── mcp.py              # 从 .mcp.json 载入 MCP 工具（parse / tools）
+│   ├── tools.py            # download_file（把交付物拷入 Store、给下载链接）
+│   ├── artifacts.py        # 交付物存 Store（download_file 与下载路由共用）
+│   ├── sandbox/            # 每线程临时沙箱 + 一次性执行
+│   │   ├── client.py       #   OpenSandbox 连接层与沙箱规格（共享）
+│   │   ├── session.py      #   会话沙箱：发现/恢复/续期/重建（SessionSandbox）
+│   │   └── run.py          #   一次性无状态执行（供 /sandboxes/execute）
+│   ├── middleware.py       # 官方中间件栈装配（重试/上限/回退/裁剪/PII/密钥脱敏）+ ToolFilter
+│   ├── review.py           # rubric 自审子系统（意图路由 + 迭代评分 + 裁决 UI + score 上报）
+│   ├── redaction.py        # 密钥/凭据兜底脱敏（PIIMiddleware callable detector）
+│   ├── scoring.py          # Langfuse score 上报（rubric 裁决 / 用户反馈 → trace）
+│   ├── builder.py          # 组装：model + tools + subagents + 中间件 → create_deep_agent
+│   ├── graph.py            # 异步工厂 make_graph(config) 按 assistant 构图  ← 入口
+│   ├── assets.py           # .deepagent/<aid>/ 资产文件的增删改移（限定目录内）
+│   ├── auth.py             # 自定义鉴权：从 x-tenant-id / x-user-id 头解析身份
+│   └── routes/             # Aegra 自定义 HTTP（各资源一个 APIRouter，平铺挂根 app）
+│       ├── __init__.py     #   app 装配 + lifespan + HTTPException handler
+│       ├── common.py       #   领域异常 → HTTP 码映射（共享）
+│       ├── files.py        #   会话交付物下载（从 Store 读回）
+│       ├── execute.py      #   一次性沙箱执行 code
+│       ├── assets.py       #   助手资产 CRUD + 跨助手批量
+│       └── feedback.py     #   用户反馈 → Langfuse score
+└── tests/                  # pytest 冒烟/单元测试（config/mcp/redaction/assets/review/middleware/sandbox/routes）
 ```
 
 ## 配置
@@ -149,7 +158,7 @@ openagentos/
 {
   "dependencies": ["."],
   "graphs": { "agentos": "./agentos/graph.py:make_graph" },
-  "http": { "app": "./agentos/routes.py:app", "enable_custom_route_auth": true }
+  "http": { "app": "agentos.routes:app", "enable_custom_route_auth": true }
 }
 ```
 
@@ -198,7 +207,7 @@ MCP 与 skills 不在 config 里——放共享磁盘 `workspace/.deepagent/<ass
 
 **官方中间件（韧性/成本/合规/上下文，可选）**：追加 LangChain / deepagents 官方中间件到默认栈之后（不替换
 skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RETRIES` / `AGENTOS_TOOL_MAX_RETRIES`
-默认 2、`AGENTOS_TOOL_CALL_LIMIT`、`AGENTOS_FALLBACK_MODEL`、`AGENTOS_PII_STRATEGY`、`AGENTOS_CONTEXT_EDITING`
+默认 2、`AGENTOS_TOOL_CALL_LIMIT`、`AGENTOS_FALLBACK_MODEL`、`AGENTOS_PII_STRATEGY`、`AGENTOS_SECRET_REDACTION`
 默认开、`AGENTOS_TOOL_SELECTOR_MAX`）；每助手可在 config 覆盖 `steps`（每 run 模型调用上限）、`fallback_model`、
 `pii_strategy`（`off`/`redact`/`mask`/`hash`/`block`）、`review.rules`（配了即启用自审迭代：规则表按对话内容
 逐 run 路由到对应 rubric——每条 `{name, rubric, triggers?, description?}`，`triggers` 正则命中优先、否则
@@ -206,8 +215,8 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 中间件栈装配见 [agentos/middleware.py](agentos/middleware.py)，自审子系统见 [agentos/review.py](agentos/review.py)。
 
 **工具治理（每助手，可选）**：`tools`（`{工具: false}` 禁用）与 `permission`（`allow`/`ask`/`deny`）——
-`deny`/禁用经官方 `wrap_model_call` 对模型隐藏该工具，`ask` 并入 `interrupt_on`（HITL 审批）。友好名
-`bash`/`read`/`write`/`edit` 自动映射为 `execute`/`read_file`/`write_file`/`edit_file`。
+`deny`/禁用经官方 `wrap_model_call` 对模型隐藏该工具，`ask` 并入 `interrupt_on`（HITL 审批）。工具名
+用真实名（`execute`/`read_file`/`write_file`/`edit_file`/`ls`/`glob`/`grep`/`write_todos`/`task` 等）。
 
 **原生 Anthropic（可选）**：`model` 用 `anthropic:` 前缀（如 `anthropic:claude-sonnet-4-5`）走
 `langchain-anthropic`，激活默认栈里的 `AnthropicPromptCachingMiddleware`（静态段缓存）；`base_url` 须指向
@@ -220,7 +229,6 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | 全局网关兜底（每助手可在 assistant config 覆盖） |
 | `AGENTOS_CONTEXT_WINDOW` | 模型上下文窗口 tokens；网关自定义模型名须显式设置，否则自动摘要压缩退回固定 170k 阈值（每助手可覆盖 `context_window`） |
 | `AGENTOS_STREAM_USAGE` | 默认 `true`；流式请求带 `stream_options.include_usage`，使流式响应回传 token usage（Langfuse 成本统计所需）。个别严格网关拒绝该参数则设 `false`（每助手可覆盖 `stream_usage`） |
-| `TAVILY_API_KEY`    | 可选，为 `research-agent` 开启联网搜索 |
 | `AGENTOS_WORKSPACE` | 共享磁盘根（app 视角，默认 `workspace`） |
 | `AGENTOS_WORKSPACE_HOST` | 沙箱 bind mount 用宿主绝对路径（缺省=上者绝对路径） |
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
@@ -236,7 +244,7 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 
 ## HTTP API
 
-Aegra custom app 路由（[agentos/routes.py](agentos/routes.py)），随核心 Agent Protocol 路由挂在同一服务上，
+Aegra custom app 路由（[agentos/routes/](agentos/routes/__init__.py)），随核心 Agent Protocol 路由挂在同一服务上，
 经 `enable_custom_route_auth` 注入认证。通用约定：
 
 - **错误体**统一为 Agent Protocol 标准 `{ "error": "<type>", "message": "…", "details": null }`
@@ -244,11 +252,11 @@ Aegra custom app 路由（[agentos/routes.py](agentos/routes.py)），随核心 
 - **归属鉴权与多租户隔离由上游业务层负责**，本层只认证、不复核资源归属（见「持久化、记忆与鉴权」）。
 - 路径里的 `{rel}` 为目录内相对路径，越界（`..` / 绝对路径 / 符号链接逃逸）→ `400`。
 
-### 会话沙箱产物（按 `thread_id` 分区）
+### 会话交付物下载（按 (user, assistant) 隔离）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/files/{thread_id}/{rel}` | 下载沙箱产物；原生支持 `Range`/`ETag` 断点续传；不存在 `404`。`download_file` 工具返回的链接即指向此处 |
+| `GET` | `/files/{assistant_id}/{thread_id}/{rel}` | 下载会话交付物（`download_file` 交付时已把文件从 ephemeral 沙箱拷进 Store，此处从 Store 读回；沙箱销毁后仍有效）。**与记忆同粒度按 identity + assistant 隔离**：`identity` 取自鉴权（非 URL），越权/不存在 `404` |
 
 ### 一次性沙箱执行
 
@@ -339,8 +347,7 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 }
 ```
 
-也可用 `type`（`sse` / `http`）代替 `transport`，或省略（据 `url` 自动推断为
-`streamable_http`）。
+省略 `transport` 时据 `url` 自动推断为 `streamable_http`。
 
 > ⚠️ **仅允许 `streamable_http` / `sse`（远程 http 家族）**：`stdio`（本地子进程）、`websocket` 及无法
 > 推断 transport 的条目会被**忽略并告警**——服务端不宜起子进程，且 app 镜像不含 `node`/`uv`。
@@ -354,10 +361,15 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
 
 - **持久化**由 Aegra 负责：它在运行时注入 PostgreSQL 的 checkpointer/store，所以
   `graph.py` 不传 `checkpointer`/`store`。线程与 run 重启后自动保留。
+- **会话回收**：会话 `/workspace` 随沙箱 TTL（`AGENTOS_SANDBOX_TTL`）销毁；thread 元数据与 checkpoint
+  由 Aegra 原生 TTL 回收（`CHECKPOINTER_TTL_ENABLED`，按 idle 时长删 thread + checkpoint + runs，多副本
+  分布式锁协调）——与 LGP 的 `checkpointer.ttl` 同机制，无自定义 sweeper。
 - **长期记忆**（默认开启，`AGENTOS_MEMORY_ENABLED`）：经 `CompositeBackend` 把虚拟路径
-  `/memories/` 路由到 `StoreBackend`（落 Aegra 的 PostgreSQL store），**跨该助手所有线程持久**
-  （namespace 按 `assistant_id` 隔离）。启动时加载 `/memories/AGENTS.md`，agent 用 `edit_file`
-  自维护记忆实现跨会话学习。`/workspace`（线程私有）与 `/memories/`（助手级持久）各司其职。
+  `/memories/` 路由到 `StoreBackend`（落 Aegra 的 PostgreSQL store），**按 aegra 官方 `["users", identity, assistant]`
+  布局隔离——每用户每助手一份、跨该用户在该助手下的所有线程持久**（与 REST `/store` 同一棵用户树）。启动时加载 `/memories/AGENTS.md`，agent 用 `edit_file`
+  自维护记忆实现跨会话学习。`/workspace`（线程私有、**ephemeral**——随沙箱销毁）与 `/memories/`
+  （用户×助手级、跨线程持久）各司其职：会话产物要留存写 `/memories/`，要交付给用户用 `download_file`（拷入 Store）。
+  身份(identity)由 [auth.py](agentos/auth.py) 决定，取自 `runtime.user.identity`（缺失回退 `configurable.user_id` → `anonymous`）；缺可信头时会共享 `anonymous` 记忆。
   想要向量语义检索，再在 `aegra.json` 加 `store.index` 块（见配置参考）。
 - **鉴权**由 `aegra.json` 的 `auth` 块启用，指向 [agentos/auth.py](agentos/auth.py)：从请求头
   `x-tenant-id` / `x-user-id` 解析身份（`identity = <tenant>:<user>`）。**缺头不拒绝**——回退
@@ -370,10 +382,10 @@ langchain-mcp-adapters 的 Connection schema（`transport` + 对应字段）：
   > 客户端改不动；但 `assistant_id` 不被钉死（run 请求体可覆盖），故上游须**权威写入 `assistant_id`
   > 并防止客户端覆盖**。
   >
-  > ⚠️ **同理，`routes.py` 的自定义资产/文件路由只认证、不复核归属**：任何已认证调用者拿到
+  > ⚠️ **同理，`routes/` 的自定义资产/文件路由只认证、不复核归属**：任何已认证调用者拿到
   > `assistant_id`（`/assistants/{id}/files…`）或 `thread_id`（`/files/{thread_id}/…`）即可读写对应文件；
   > 默认 `system` assistant 更是人人可见。这是**刻意设计**——归属由上游可信网关保证。要在本服务内强制，
-  > 加 `@auth.on` 处理器或在 `routes.py` 里按 `user` 校验资源归属。
+  > 加 `@auth.on` 处理器或在 `routes/` 里按 `user` 校验资源归属。
 
 ## 可观测性(OTEL / Langfuse)
 

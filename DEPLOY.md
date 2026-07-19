@@ -133,5 +133,7 @@ docker compose --profile langfuse up -d --build
   （`sandbox.toml` 的 `network_mode = openagentos_default`，即 `<部署目录名>_default`）。
 - 迁移：`RUN_MIGRATIONS_ON_STARTUP=true` 启动自动迁移；多实例部署设 `false` 并带外
   `aegra db upgrade`。
-- 共享磁盘是唯一持久真源；沙箱可弃（TTL 到期销毁，下次操作重挂同一 `subPath` 重建）。单机自托管
-  假设，多节点改用 K8s + PVC（设 `AGENTOS_WORKSPACE_CLAIM`）。
+- 共享磁盘只存**助手配置**（skills / `.mcp.json`）；会话 `/workspace` 是 ephemeral（随沙箱 TTL 销毁、
+  重建为空目录）——要持久走 `/memories/`（Store），交付走 `download_file`（拷入 Store）。thread/checkpoint
+  回收由 aegra 原生 TTL（`CHECKPOINTER_TTL_ENABLED`，无自定义 sweeper）。单机自托管假设，多节点改用
+  K8s + PVC（设 `AGENTOS_WORKSPACE_CLAIM`，仍用于 skills 配置盘）。

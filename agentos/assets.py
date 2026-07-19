@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import shutil
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,8 +14,6 @@ from agentos import workspace
 
 @dataclass(frozen=True)
 class Entry:
-    """path 为相对 assistant 根的 posix 路径;目录的 size 记 0。"""
-
     path: str
     is_dir: bool
     size: int
@@ -24,26 +23,36 @@ def _resolve(base: Path, rel: str) -> Path:
     return workspace.contained(base, rel)
 
 
+def _resolve_child(base: Path, rel: str) -> Path:
+    """如 _resolve,但拒绝解析到 base 本身——挡空/根 rel 对整个助手资产树的删除/移动/覆写。"""
+    target = workspace.contained(base, rel)
+    if target == base.resolve():
+        raise ValueError("refusing to operate on the assistant root")
+    return target
+
+
 def _rel(base: Path, target: Path) -> str:
     return target.relative_to(base.resolve()).as_posix()
 
 
 def ls(base: Path, rel: str = "") -> list[Entry]:
     target = _resolve(base, rel)
-    if not target.exists():
+    if not target.is_dir():
         return []
     return [
         Entry(_rel(base, c), c.is_dir(), c.stat().st_size if c.is_file() else 0)
         for c in sorted(target.iterdir())
+        if not c.is_symlink()  # 不跟随 symlink,防越界枚举外部文件
     ]
 
 
 _SKIP_DIRS = {".git"}
 _MAX_UNPACK_BYTES = 256 * 1024 * 1024  # 解压总字节上限,防 zip bomb
+_UNPACK_CHUNK = 1024 * 1024
 
 
-def _iter_files(top: Path):
-    """深度遍历产出文件,**不跟随符号链接**、跳过 VCS 目录。"""
+def _iter_files(top: Path) -> Iterator[Path]:
+    """深度遍历产出文件,不跟随符号链接、跳过 VCS 目录。"""
     if not top.is_dir():
         return
     stack = [top]
@@ -53,7 +62,7 @@ def _iter_files(top: Path):
         except OSError:
             continue
         for child in children:
-            if child.is_symlink():  # 不跟随 symlink,防越界读
+            if child.is_symlink():
                 continue
             if child.is_dir():
                 if child.name not in _SKIP_DIRS:
@@ -63,15 +72,15 @@ def _iter_files(top: Path):
 
 
 def walk(base: Path, rel: str = "") -> list[Entry]:
-    """递归子树返回全部 Entry(供前端一次性建树);跳过 VCS 目录与符号链接。"""
+    """递归子树返回全部 Entry;跳过 VCS 目录与符号链接。"""
     root = _resolve(base, rel)
-    if not root.exists():
+    if not root.is_dir():
         return []
     out: list[Entry] = []
     stack = [root]
     while stack:
         for child in sorted(stack.pop().iterdir()):
-            if child.is_symlink():  # 不跟随 symlink,防越界枚举外部文件名/大小
+            if child.is_symlink():
                 continue
             if child.is_dir():
                 if child.name in _SKIP_DIRS:
@@ -88,14 +97,14 @@ def read(base: Path, rel: str) -> str:
 
 
 def write(base: Path, rel: str, content: str) -> str:
-    target = _resolve(base, rel)
+    target = _resolve_child(base, rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return _rel(base, target)
 
 
 def save(base: Path, rel: str, data: bytes) -> str:
-    target = _resolve(base, rel)
+    target = _resolve_child(base, rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     return _rel(base, target)
@@ -103,7 +112,7 @@ def save(base: Path, rel: str, data: bytes) -> str:
 
 def put(base: Path, rel: str, data: bytes) -> tuple[str, bool]:
     """upsert 写字节(PUT 语义);返回 (相对路径, 是否新建)。"""
-    target = _resolve(base, rel)
+    target = _resolve_child(base, rel)
     created = not target.exists()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
@@ -111,10 +120,7 @@ def put(base: Path, rel: str, data: bytes) -> tuple[str, bool]:
 
 
 def unpack(base: Path, rel: str, data: bytes) -> list[str]:
-    """把 zip 解压进 rel 目录(成员过 contained 防 zip-slip,兼容反斜杠路径)。返回写入的相对路径。
-
-    解压总量设上限防 zip bomb:先按头部声明的 file_size 预检,再按实际写入字节累计兜底(防声明撒谎)。
-    """
+    """把 zip 解压进 rel 目录(成员过 contained 防 zip-slip)。防 zip bomb:声明预检 + 流式逐块累计兜底。"""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
@@ -131,20 +137,18 @@ def unpack(base: Path, rel: str, data: bytes) -> list[str]:
             member = info.filename.replace("\\", "/")
             target = _resolve(base, f"{rel}/{member}")
             target.parent.mkdir(parents=True, exist_ok=True)
-            payload = zf.read(info)
-            written += len(payload)
-            if written > _MAX_UNPACK_BYTES:
-                raise ValueError(f"zip expansion exceeds limit {_MAX_UNPACK_BYTES}")
-            target.write_bytes(payload)
+            with zf.open(info) as src, target.open("wb") as dst:
+                while chunk := src.read(_UNPACK_CHUNK):
+                    written += len(chunk)
+                    if written > _MAX_UNPACK_BYTES:
+                        raise ValueError(f"zip expansion exceeds limit {_MAX_UNPACK_BYTES}")
+                    dst.write(chunk)
             out.append(_rel(base, target))
     return out
 
 
 def pack(base: Path, rel: str = "") -> bytes:
-    """把 base/rel 目录打包成 zip 字节(供整目录下载);跳过 VCS 目录与符号链接,目录不存在则空包。
-
-    经 `_iter_files` 不跟随 symlink:否则沙箱内不可信代码在共享卷放 symlink,打包会读出 app 宿主任意文件。
-    """
+    """把 base/rel 目录打包成 zip;跳过 VCS 目录与符号链接(防沙箱经共享卷 symlink 读出宿主任意文件)。"""
     top = _resolve(base, rel)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -154,7 +158,7 @@ def pack(base: Path, rel: str = "") -> bytes:
 
 
 def create(base: Path, rel: str, content: str = "") -> str:
-    target = _resolve(base, rel)
+    target = _resolve_child(base, rel)
     if target.exists():
         raise FileExistsError(rel)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +167,7 @@ def create(base: Path, rel: str, content: str = "") -> str:
 
 
 def move(base: Path, src: str, dest: str) -> str:
-    source, target = _resolve(base, src), _resolve(base, dest)
+    source, target = _resolve_child(base, src), _resolve_child(base, dest)
     if target.exists():
         raise FileExistsError(dest)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +176,7 @@ def move(base: Path, src: str, dest: str) -> str:
 
 
 def delete(base: Path, rel: str) -> bool:
-    target = _resolve(base, rel)
+    target = _resolve_child(base, rel)
     if not target.exists():
         return False
     if target.is_dir():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models import BaseChatModel, ModelProfile
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
@@ -38,8 +38,7 @@ def build(
     else:
         if name.startswith("openai:"):
             model = name.removeprefix("openai:")
-        # stream_usage=True 强制流式带 stream_options.include_usage → 流式响应回传 token usage;
-        # 否则自定义网关 base_url 下 langchain 默认不请求,Langfuse 拿不到 token(网关须支持该参数)。
+        # stream_usage=True 让流式回传 token usage(Langfuse 成本统计所需;网关须支持该参数)。
         llm = ChatOpenAI(
             model=cast(str, model),
             base_url=base_url,
@@ -48,7 +47,6 @@ def build(
             **extra,
         )
     if context_window:
-        # 网关自定义模型名 langchain 认不出窗口(profile=None)→ summarization 退回固定 170k、与真实窗口脱钩。
-        # 注入 max_input_tokens 使其改按"窗口 85%"触发,撞限前优雅压缩(合并进已推断的 profile,不覆盖其余字段)。
-        llm.profile = {**(llm.profile or {}), "max_input_tokens": context_window}
+        # 网关自定义模型名认不出窗口→summarization 退回固定 170k;注入 max_input_tokens 改按窗口 85% 触发。
+        llm.profile = cast(ModelProfile, {**(llm.profile or {}), "max_input_tokens": context_window})
     return llm

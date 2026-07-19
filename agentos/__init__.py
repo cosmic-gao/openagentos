@@ -16,10 +16,9 @@ from agentos.config import (  # noqa: E402
     resolve,
     safe_segment,
 )
-from agentos.prompts import RESEARCH_PROMPT, SYSTEM_PROMPT  # noqa: E402
+from agentos.prompts import SYSTEM_PROMPT  # noqa: E402
 
 __all__ = [
-    "RESEARCH_PROMPT",
     "SYSTEM_PROMPT",
     "AgentConfig",
     "ResolvedConfig",

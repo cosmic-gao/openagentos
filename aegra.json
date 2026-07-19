@@ -4,7 +4,7 @@
     "agentos": "./agentos/graph.py:make_graph"
   },
   "http": {
-    "app": "./agentos/routes.py:app",
+    "app": "agentos.routes:app",
     "enable_custom_route_auth": true
   },
   "auth": {
