@@ -233,7 +233,7 @@ skills/memory/summarization）。全局默认在 `.env`（`AGENTOS_MODEL_MAX_RET
 | `AGENTOS_WORKSPACE` | 共享磁盘根（app 视角，默认 `workspace`） |
 | `AGENTOS_WORKSPACE_HOST` | 沙箱 bind mount 用宿主绝对路径（缺省=上者绝对路径） |
 | `AGENTOS_WORKSPACE_CLAIM` | K8s PVC claim（设了则优先于 host 路径） |
-| `AGENTOS_PUBLIC_URL` | 下载链接前缀（`download_file` / `/files` 路由） |
+| `AGENTOS_PUBLIC_URL` | 反代子路径前缀：仅用作 FastAPI `root_path`（反代挂子路径时令 `/docs`、openapi 指向带前缀 URL）；空=根路径。**下载不依赖它**——交付物由工具以 artifact 形式返回，前端经自身 BFF 代理下载 |
 | `AGENTOS_MEMORY_ENABLED` | 是否启用长期记忆（默认 `true`；`/memories/` 路由到持久 store） |
 | `OTEL_TARGETS` | 可观测性总开关（默认空=关；设 `LANGFUSE` 上报 token/耗时/成本到 Langfuse） |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Langfuse 项目 key 与地址（见「可观测性」） |
@@ -254,11 +254,11 @@ Aegra custom app 路由（[agentos/routes/](agentos/routes/__init__.py)），随
 - **归属鉴权与多租户隔离由上游业务层负责**，本层只认证、不复核资源归属（见「持久化、记忆与鉴权」）。
 - 路径里的 `{rel}` 为目录内相对路径，越界（`..` / 绝对路径 / 符号链接逃逸）→ `400`。
 
-### 会话交付物下载（按 (user, assistant) 隔离）
+### 会话交付物下载（按 会话+用户 隔离，凭下载 token）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/files/{assistant_id}/{thread_id}/{rel}` | 下载会话交付物（`download_file` 交付时已把文件从 ephemeral 沙箱拷进 Store，此处从 Store 读回；沙箱销毁后仍有效）。**与记忆同粒度按 identity + assistant 隔离**：`identity` 取自鉴权（非 URL），越权/不存在 `404` |
+| `GET` | `/files/{token}` | 下载会话交付物（`download_file` 交付时已把文件从 ephemeral 沙箱拷进 Store，此处从 Store 读回；沙箱销毁后仍有效）。**按 (会话、用户) 隔离**：`token` 为交付时一次性生成的高熵不可猜串、记录 owner `identity`+`thread`；浏览器直接点开即可下载，且请求**带可信身份头时须匹配 owner**（不匹配 `403`），无身份头的纯导航凭 token 放行；不存在 `404` |
 
 ### 一次性沙箱执行
 
@@ -428,10 +428,7 @@ allowlist / 启用开关)按 agent 存于其 **assistant 配置** `config.config
   > 客户端改不动；但 `assistant_id` 不被钉死（run 请求体可覆盖），故上游须**权威写入 `assistant_id`
   > 并防止客户端覆盖**。
   >
-  > ⚠️ **同理，`routes/` 的自定义资产/文件路由只认证、不复核归属**：任何已认证调用者拿到
-  > `assistant_id`（`/assistants/{id}/files…`）或 `thread_id`（`/files/{thread_id}/…`）即可读写对应文件；
-  > 默认 `system` assistant 更是人人可见。这是**刻意设计**——归属由上游可信网关保证。要在本服务内强制，
-  > 加 `@auth.on` 处理器或在 `routes/` 里按 `user` 校验资源归属。
+  > ⚠️ **助手资产路由（`/assistants/{id}/files…`）只认证、不复核归属**：`.deepagent/<aid>/` 是 **assistant 级共享资产**，任何已认证调用者拿到 `assistant_id` 即可读写（`download_skill` 直链即基于此），默认 `system` assistant 更是人人可见——**刻意设计**，归属由上游可信网关保证。而**会话交付物下载（`/files/{token}`）按 (会话、用户) 隔离**：`token` 不可猜、记录 owner，带可信身份头的请求须匹配 owner。要在资产路由上也强制归属，加 `@auth.on` 处理器或在 `routes/` 里按 `user` 校验。
 
 ## 可观测性(OTEL / Langfuse)
 
