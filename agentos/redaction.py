@@ -41,7 +41,9 @@ _RULES: list[_Rule] = [
     ("bearer_token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{20,}={0,2}"), 0),
     # ── 只 redact 凭据段、保留上下文(group 1)──
     ("basic_auth_url", re.compile(r"(?i)\b(?:https?|ftp|postgres(?:ql)?|redis|mongodb(?:\+srv)?|amqp)://[^\s:/@]+:([^\s:/@]+)@"), 1),
-    ("assigned_secret", re.compile(r"""(?i)\b(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key)\b\s*[:=]\s*['"]?([A-Za-z0-9._\-/+=]{8,})['"]?"""), 1),
+    # 首边界用 (?<![A-Za-z0-9]) 而非 \b:\b 把 `_` 当词字符,会漏掉最常见的 snake_case 命名
+    # (client_secret / db_password / access_token / AWS_SECRET_ACCESS_KEY …);把 `_` 当分隔符才能命中。
+    ("assigned_secret", re.compile(r"""(?i)(?<![A-Za-z0-9])(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key)\b\s*[:=]\s*['"]?([A-Za-z0-9._\-/+=]{8,})['"]?"""), 1),
 ]
 
 

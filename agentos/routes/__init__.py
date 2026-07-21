@@ -16,18 +16,21 @@ from aegra_api.models.errors import AgentProtocolError, get_error_type
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from agentos import scoring
+from agentos import msteams, scoring
 from agentos.config import get_settings
-from agentos.routes import assets, execute, feedback, files
+from agentos.routes import assets, execute, feedback, files, webhooks
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """关停时冲刷缓冲的 Langfuse score。会话/checkpoint 回收交给 aegra 原生 TTL(CHECKPOINTER_TTL_ENABLED)。"""
+    """启动预热 MS Teams JWKS(避免首个 webhook 冷缓存超时);关停冲刷 Langfuse score 并释放
+    Teams 通道的 httpx/langgraph 客户端。会话/checkpoint 回收交给 aegra 原生 TTL。"""
+    await msteams.prewarm()
     try:
         yield
     finally:
         scoring.flush()
+        await msteams.aclose()
 
 
 # root_path 取 public_url 的路径部分:反代挂子路径时令 /docs、openapi 指向带前缀 URL。
@@ -49,5 +52,5 @@ async def _agent_protocol_error(_request: Request, exc: HTTPException) -> JSONRe
 
 # 平铺进 app.router.routes(非 include_router:0.139 的 include_router 惰性包一层会藏住 APIRoute,
 # 令 aegra 鉴权注入不到)。顺序:download 的 /files/{tid}/{rel} 与 batch 的 /files/upload|delete 不冲突。
-for _module in (files, execute, assets, feedback):
+for _module in (files, execute, assets, feedback, webhooks):
     app.router.routes.extend(_module.router.routes)

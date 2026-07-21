@@ -1,14 +1,15 @@
-"""MCP 工具载入(langchain-mcp-adapters):解析 .mcp.json,按 server 缓存载入;仅允许远程 http/sse。"""
+"""MCP 工具载入(langchain-mcp-adapters):解析 .mcp.json,按 server 缓存载入;仅允许 http/sse transport。
+
+网络出站的 SSRF/私网防护交由下游网关负责,本层不再对 url 做主机/IP 过滤。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import os
 from typing import Any
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +18,6 @@ _cache: dict[str, list] = {}
 _LOAD_TIMEOUT_S = float(os.getenv("AGENTOS_MCP_LOAD_TIMEOUT", "20"))
 
 _ALLOWED_TRANSPORTS = frozenset({"streamable_http", "sse"})
-
-_BLOCKED_HOSTS = frozenset({"localhost", "metadata.google.internal"})
-
-
-def _is_remote_url(url: Any) -> bool:
-    """仅放行 http/https 且 host 非环回/私网/链路本地(元数据)/保留地址——挡配置层 SSRF。"""
-    if not isinstance(url, str):
-        return False
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
-    host = parsed.hostname.lower()
-    if host in _BLOCKED_HOSTS:
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return True  # 主机名:留给 DNS,不在此拦
-    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast)
 
 
 def _transport(conn: dict) -> str | None:
@@ -49,7 +31,7 @@ def _transport(conn: dict) -> str | None:
 
 
 def _normalize(servers: dict) -> dict:
-    """过滤:非 http/sse(如 stdio)或指向环回/私网/元数据的 url 跳过并告警。"""
+    """过滤:非 http/sse(如 stdio)或缺 url 的条目跳过并告警。SSRF/私网防护交下游网关。"""
     normalized: dict = {}
     rejected: list[str] = []
     for name, spec in servers.items():
@@ -60,14 +42,14 @@ def _normalize(servers: dict) -> dict:
         if transport not in _ALLOWED_TRANSPORTS:
             rejected.append(f"{name}({transport or 'unknown'})")
             continue
-        if not _is_remote_url(conn.get("url")):
-            rejected.append(f"{name}(unsafe-url)")
+        if not conn.get("url"):
+            rejected.append(f"{name}(no-url)")
             continue
         conn["transport"] = transport
         normalized[name] = conn
     if rejected:
         logger.warning(
-            "Ignoring unusable MCP server(s) (need http/sse transport + remote url): %s", ", ".join(rejected)
+            "Ignoring unusable MCP server(s) (need http/sse transport + url): %s", ", ".join(rejected)
         )
     return normalized
 

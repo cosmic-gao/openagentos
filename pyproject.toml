@@ -27,8 +27,17 @@ dependencies = [
     "deepagents-opensandbox",
     "opensandbox>=0.1.13",
     "langchain-anthropic>=1.0",
-    "langfuse>=3",
+    # 直接依赖:沙箱连接层与 Langfuse score 上报(REST)都直接用 httpx。
+    "httpx>=0.28",
 ]
+
+[dependency-groups]
+# 仅开发/CI 用:跑 tests/ 的单元测试。生产镜像不装 dev 组。
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.uv]
 # This is an application, not a distributable library — uv only manages the

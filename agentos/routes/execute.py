@@ -6,6 +6,7 @@ from typing import Annotated, Any
 import httpx
 from aegra_api.models.errors import BAD_REQUEST, UNAVAILABLE
 from fastapi import APIRouter, HTTPException
+from opensandbox.exceptions import SandboxException
 from pydantic import BaseModel, Field, field_validator
 
 from agentos import sandbox
@@ -61,6 +62,9 @@ async def execute(body: ExecuteBody) -> ExecuteResult:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SandboxException as exc:
+        # 后端不可达/就绪超时/配额耗尽:非 OSError/httpx 子类,须单列以兑现 503 契约(否则兜底成 500)。
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (OSError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ExecuteResult(output=result.output, exit_code=result.exit_code, truncated=result.truncated)

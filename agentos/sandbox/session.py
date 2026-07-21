@@ -69,7 +69,7 @@ async def _open(settings: Settings, identity: str, assistant_id: str, thread_id:
     if existing is not None:
         return AsyncOpenSandboxBackend(existing, default_timeout=settings.sandbox_timeout)
 
-    backend = await AsyncOpenSandboxBackend.create(
+    created = await AsyncOpenSandboxBackend.create(
         settings.sandbox_image,
         connection_config=_connection(settings),
         timeout=timedelta(seconds=settings.sandbox_ttl),
@@ -79,31 +79,15 @@ async def _open(settings: Settings, identity: str, assistant_id: str, thread_id:
         metadata=metadata,
     )
     logger.info("sandbox created (identity=%s assistant=%s thread=%s)", identity, assistant_id, thread_id)
-    return backend
-
-
-_closing_tasks: set[asyncio.Task[None]] = set()
-
-
-async def _safe_aclose(backend: AsyncOpenSandboxBackend) -> None:
-    try:
-        await backend.aclose()
-    except Exception as exc:
-        logger.debug("evicted sandbox aclose failed: %s", exc)
-
-
-def _schedule_close(backend: AsyncOpenSandboxBackend) -> None:
-    """后台 aclose 被驱逐/失联的句柄(强引用留到完成)。"""
-    try:
-        task = asyncio.create_task(_safe_aclose(backend))
-    except RuntimeError:
-        return
-    _closing_tasks.add(task)
-    task.add_done_callback(_closing_tasks.discard)
+    # 会话箱统一交服务端 TTL(renew_intent)回收:本层句柄一律 owns_sandbox=False,与 _discover 返回的句柄语义一致。
+    # 驱逐(_trim)/失联(_forget)只丢本地引用、绝不 kill 真箱——否则高并发下 _trim 可能误杀正在执行的首建箱
+    # (命令中断 + ephemeral /workspace 丢失);同一会话在 TTL 内重来经 _discover 重连同一箱、数据不丢。
+    return AsyncOpenSandboxBackend(created.sandbox, owns_sandbox=False, default_timeout=settings.sandbox_timeout)
 
 
 def _trim(keep: tuple[str, str, str]) -> None:
-    """压回上限:LRU 丢弃最旧的空闲槽(thread_id 随会话增长,必须限界)。"""
+    """压回上限:LRU 丢弃最旧的空闲槽(thread_id 随会话增长,必须限界)。
+    句柄 owns_sandbox=False(见 _open),丢弃即可——真箱交服务端 TTL 回收,无需 aclose。"""
     while len(_slots) > _MAX_SLOTS:
         victim = next(
             (key for key, slot in _slots.items() if key != keep and not slot.lock.locked()),
@@ -111,17 +95,14 @@ def _trim(keep: tuple[str, str, str]) -> None:
         )
         if victim is None:
             return
-        slot = _slots.pop(victim)
-        if slot.backend is not None:
-            _schedule_close(slot.backend)
+        _slots.pop(victim)
 
 
 def _forget(key: tuple[str, str, str], backend: AsyncOpenSandboxBackend) -> None:
-    """忘记失联句柄;仅当槽内仍是同一实例(避免误删并发新句柄)。"""
+    """忘记失联句柄;仅当槽内仍是同一实例(避免误删并发新句柄)。句柄 owns=False,丢弃即可(真箱由 TTL 回收)。"""
     slot = _slots.get(key)
     if slot is not None and slot.backend is backend:
         slot.backend = None
-        _schedule_close(backend)
 
 
 async def _renew(settings: Settings, slot: _Slot) -> None:

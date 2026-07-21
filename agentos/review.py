@@ -90,6 +90,7 @@ class _Rule:
     patterns: list[re.Pattern[str]]
     rubric: str
     description: str
+    catch_all: bool = False  # 仅「未配置 triggers」时为真=显式全命中;坏正则致空 patterns 不算(见 _compile_rules)
 
 
 def _compile_triggers(patterns: list[str] | None) -> list[re.Pattern[str]]:
@@ -99,20 +100,36 @@ def _compile_triggers(patterns: list[str] | None) -> list[re.Pattern[str]]:
         try:
             compiled.append(re.compile(pattern, re.IGNORECASE))
         except re.error:
-            continue
+            logger.warning("review trigger %r failed to compile; skipped", pattern)
     return compiled
 
 
 def _compile_rules(rules: Any) -> list[_Rule]:
-    return [
-        _Rule(
-            name=getattr(r, "name", "") or "default",
-            patterns=_compile_triggers(getattr(r, "triggers", None)),
-            rubric=getattr(r, "rubric", "") or "",
-            description=getattr(r, "description", "") or "",
+    """编译规则表并唯一化 name:重名会让 router 路由表({name: rubric})折叠、只剩最后一条,故消歧。
+    catch_all 仅当「未配置 triggers」时为真——配了却全部编译失败,视为「不命中」而非退化成命中一切
+    (否则一个 trigger 笔误就把规则静默翻转为对每个 run 都注入其 rubric)。"""
+    out: list[_Rule] = []
+    seen: set[str] = set()
+    for i, r in enumerate(rules or []):
+        raw_triggers = getattr(r, "triggers", None) or []
+        patterns = _compile_triggers(raw_triggers)
+        if raw_triggers and not patterns:
+            logger.warning("review rule #%d: all triggers failed to compile; rule disabled (won't match)", i + 1)
+        name = (getattr(r, "name", "") or "").strip() or f"rule{i + 1}"
+        if name in seen:
+            logger.warning("review rule name %r duplicated; disambiguating to keep router routing intact", name)
+            name = f"{name}-{i + 1}"
+        seen.add(name)
+        out.append(
+            _Rule(
+                name=name,
+                patterns=patterns,
+                rubric=getattr(r, "rubric", "") or "",
+                description=getattr(r, "description", "") or "",
+                catch_all=not raw_triggers,
+            )
         )
-        for r in rules or []
-    ]
+    return out
 
 
 class RouteDecision(BaseModel):
@@ -160,7 +177,7 @@ class _Router:
 class RubricSeed(AgentMiddleware[_RubricState, Any, Any]):
     """按用户意图逐 run 把匹配规则的 rubric 注入 state;不匹配注入空串(空 rubric 即 no-op)。
 
-    正则命中优先(triggers 为空=catch-all),否则交 router 或 none。每 run 无条件重写 rubric,防跨 run 残留。
+    正则命中优先(未配 triggers=catch-all;坏正则不算),否则交 router 或 none。每 run 无条件重写 rubric,防跨 run 残留。
     """
 
     state_schema = _RubricState
@@ -172,7 +189,7 @@ class RubricSeed(AgentMiddleware[_RubricState, Any, Any]):
 
     def _match(self, text: str) -> str | None:
         for rule in self._rules:
-            if not rule.patterns or any(pattern.search(text) for pattern in rule.patterns):
+            if rule.catch_all or (rule.patterns and any(pattern.search(text) for pattern in rule.patterns)):
                 return rule.rubric
         return None
 

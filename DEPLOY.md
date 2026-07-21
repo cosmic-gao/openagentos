@@ -72,6 +72,24 @@ cd /data/openagentos && docker compose up -d --build
 创建 assistant 时把 `model/prompt/api_key/base_url` 放进 `config.configurable`；MCP 与 skills
 放共享磁盘 `workspace/.deepagent/<assistant_id>/`（`.mcp.json` 与 `skills/`）。详见 [README](README.md)。
 
+## MS Teams 通道(opt-in,多租户/多 agent/多 bot)
+
+每个 agent 一个独立 Azure Bot。bot 凭据(App ID / secret / Tenant / allowlist / 启用开关)在**平台 UI**
+(创建/编辑 agent 的 *Microsoft Teams* 区)填写、按 agent 存于其 assistant 配置——**不放 `.env`**,app 侧
+唯一相关 env 是 `MSTEAMS_LOCAL_URL`(默认 `http://localhost:2026`,通常无需改)。接入步骤与安全语义见
+[README「MS Teams 通道」](README.md#ms-teams-通道)。
+
+- **messaging endpoint 必须是公网 HTTPS 且按 agent 区分**:`https://<域名>/webhooks/msteams/<agentId>?X_Tenant_ID=<租户>`
+  (agentId=稳定的平台 agent id,租户参数由平台 UI 拼好一并展示)。多租户部署里 `?X_Tenant_ID` 是**网关**把
+  Teams 回调路由到该租户 agentos pod 的依据(用 `?` 正规 query,勿用 `&`;agentos 自身会剥离、单实例可忽略)。
+  生产由反代(nginx / ingress)终结 TLS 后转发到 app `:2026`;反代挂子路径时须把前缀剥掉后转发。
+- **开发期**没有公网域名时,用隧道把公网 HTTPS 转发到本机 `:2026`:
+  `devtunnel host -p 2026 --allow-anonymous` 或 `ngrok http 2026`,再把生成的地址
+  (加 `/webhooks/msteams/<agentId>` 路径)填进对应 agent 的 Azure Bot messaging endpoint。
+- **安全**:入站强制 Bot Framework JWT 验签(按该 agent 的 App ID 校验、要求 serviceUrl claim),
+  失败一律 401;配置了 Tenant ID 则对异租户/缺租户 fail-closed;allowlist 收紧发件人;`enabled` 关闭即停用。
+  回复走出站 token(client_credentials,按 App ID 缓存,仅发往可信 Bot Connector 主机),不依赖入站连接。
+
 ## 可观测性(OTEL / Langfuse,opt-in)
 
 Aegra 已内置 OpenTelemetry + OpenInference 自动埋点:开启后**每次 LLM 调用的 token 数(输入/输出/
